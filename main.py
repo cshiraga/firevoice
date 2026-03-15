@@ -289,11 +289,14 @@ class VoiceInputApp:
         self.recorder = AudioRecorder(config)
         self.trigger_held = False
         self._was_muted = False
+        self._muted_by_us = False
         self.replacements = load_replacements(config.replacements_file)
         self.jobs: queue.Queue[np.ndarray] = queue.Queue()
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._model: Optional[WhisperModel] = None
         self._model_lock = threading.Lock()
+        self._fn_monitor: Optional[FnKeyMonitor] = None
+        self._listener: Optional[keyboard.Listener] = None
         pyautogui.FAILSAFE = False
         pyautogui.PAUSE = 0
 
@@ -321,11 +324,12 @@ class VoiceInputApp:
             self._fn_monitor.start()
             return
 
-        with keyboard.Listener(
+        self._listener = keyboard.Listener(
             on_press=self._on_press,
             on_release=self._on_release,
             suppress=False,
-        ) as listener:
+        )
+        with self._listener as listener:
             listener.join()
 
     def _on_press(self, key: object) -> None:
@@ -344,12 +348,15 @@ class VoiceInputApp:
         try:
             if self.config.mute_during_recording:
                 self._was_muted = self._get_mute_state()
-                self._set_mute_state(True)
+                if not self._was_muted:
+                    self._set_mute_state(True)
+                    self._muted_by_us = True
             self.recorder.start()
         except Exception as exc:
             self.trigger_held = False
-            if self.config.mute_during_recording and not self._was_muted:
+            if self._muted_by_us:
                 self._set_mute_state(False)
+                self._muted_by_us = False
             print(f"Failed to start recording: {exc}", flush=True)
 
     def _handle_trigger_release(self) -> None:
@@ -363,8 +370,9 @@ class VoiceInputApp:
         except Exception as exc:
             print(f"Failed to stop recording: {exc}", flush=True)
         finally:
-            if self.config.mute_during_recording and not self._was_muted:
+            if self._muted_by_us:
                 self._set_mute_state(False)
+                self._muted_by_us = False
 
         if audio is not None:
             self.jobs.put(audio)
@@ -477,9 +485,10 @@ def main() -> int:
 
     def _shutdown(signum: int, _frame: object) -> None:
         print(f"\nReceived signal {signum}, shutting down.", flush=True)
-        monitor = getattr(app, "_fn_monitor", None)
-        if monitor is not None:
-            monitor.stop()
+        if app._fn_monitor is not None:
+            app._fn_monitor.stop()
+        if app._listener is not None:
+            app._listener.stop()
 
     signal.signal(signal.SIGTERM, _shutdown)
 
@@ -488,7 +497,7 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nExiting.", flush=True)
     finally:
-        if app.config.mute_during_recording:
+        if app._muted_by_us:
             app._set_mute_state(False)
     return 0
 
