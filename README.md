@@ -7,6 +7,7 @@ It records your voice while you hold a trigger key (e.g., `fn`), then transcribe
 
 - **100% Local & Private**: All transcription is done on your machine. No audio data or transcripts are ever sent to external APIs (OpenAI, Google, etc.).
 - **High Accuracy**: Uses the `small` Whisper model by default for high-quality Japanese and technical term recognition.
+- **Auto-Mute**: Automatically mutes your system audio while recording to prevent speakers from interfering with your voice.
 - **Custom Replacements**: Automatically fix common misspellings or enforce styling (e.g., "ジェミニ" -> "Gemini") via `voice-replacements.json`.
 - **Privacy First**: Audio files are deleted immediately after transcription. No text logs are stored after stopping the service.
 - **Fast Input**: Paste-based input ensures quick and reliable text insertion into any application.

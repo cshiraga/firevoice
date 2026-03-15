@@ -3,6 +3,7 @@
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import tempfile
@@ -43,10 +44,14 @@ class Config:
     dtype: str = "int16"
     language: str = "ja"
     model_size: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "small"))
-    trigger_key_name: str = field(default_factory=lambda: os.getenv("VOICE_TRIGGER_KEY", "fn"))
+    trigger_key_name: str = field(default_factory=lambda: os.getenv("VOICE_TRIGGER_KEY", "f8"))
     output_mode: str = field(default_factory=lambda: os.getenv("VOICE_OUTPUT_MODE", "paste"))
     replacements_file: Path = field(default_factory=default_replacements_path)
+    mute_during_recording: bool = field(
+        default_factory=lambda: os.getenv("VOICE_MUTE_DURING_RECORDING", "true").lower() == "true"
+    )
     initial_prompt: str = (
+
         "こんにちは。こちらは音声入力のツールです。Gemini, Claude, ChatGPT, GitHub, Slack, API, GCP, AWS, Azure, "
         "Python, JavaScript, TypeScript, Node.js, JSON, YAML, Docker, Kubernetes, "
         "Terraform, Ansible などのエンジニアリング用語が含まれます。句読点を含め、正確に書き起こしてください。"
@@ -161,6 +166,7 @@ class FnKeyMonitor:
         self._fn_down = False
         self._tap = None
         self._run_loop_source = None
+        self._run_loop: object = None
 
     def start(self) -> None:
         event_mask = Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
@@ -184,14 +190,18 @@ class FnKeyMonitor:
             self._tap,
             0,
         )
-        current_loop = Quartz.CFRunLoopGetCurrent()
+        self._run_loop = Quartz.CFRunLoopGetCurrent()
         Quartz.CFRunLoopAddSource(
-            current_loop,
+            self._run_loop,
             self._run_loop_source,
             Quartz.kCFRunLoopCommonModes,
         )
         Quartz.CGEventTapEnable(self._tap, True)
         Quartz.CFRunLoopRun()
+
+    def stop(self) -> None:
+        if self._run_loop is not None:
+            Quartz.CFRunLoopStop(self._run_loop)
 
     def _handle_event(self, _proxy, event_type, event, _refcon):
         if event_type != Quartz.kCGEventFlagsChanged:
@@ -278,6 +288,7 @@ class VoiceInputApp:
         )
         self.recorder = AudioRecorder(config)
         self.trigger_held = False
+        self._was_muted = False
         self.replacements = load_replacements(config.replacements_file)
         self.jobs: queue.Queue[np.ndarray] = queue.Queue()
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
@@ -303,11 +314,11 @@ class VoiceInputApp:
 
         if self.trigger_key_name == FN_TRIGGER_NAME:
             print("Using native macOS monitoring for the fn/globe key.", flush=True)
-            monitor = FnKeyMonitor(
+            self._fn_monitor = FnKeyMonitor(
                 on_press=self._handle_trigger_press,
                 on_release=self._handle_trigger_release,
             )
-            monitor.start()
+            self._fn_monitor.start()
             return
 
         with keyboard.Listener(
@@ -331,9 +342,14 @@ class VoiceInputApp:
 
         self.trigger_held = True
         try:
+            if self.config.mute_during_recording:
+                self._was_muted = self._get_mute_state()
+                self._set_mute_state(True)
             self.recorder.start()
         except Exception as exc:
             self.trigger_held = False
+            if self.config.mute_during_recording and not self._was_muted:
+                self._set_mute_state(False)
             print(f"Failed to start recording: {exc}", flush=True)
 
     def _handle_trigger_release(self) -> None:
@@ -341,11 +357,14 @@ class VoiceInputApp:
             return
 
         self.trigger_held = False
+        audio = None
         try:
             audio = self.recorder.stop()
         except Exception as exc:
             print(f"Failed to stop recording: {exc}", flush=True)
-            return
+        finally:
+            if self.config.mute_during_recording and not self._was_muted:
+                self._set_mute_state(False)
 
         if audio is not None:
             self.jobs.put(audio)
@@ -410,6 +429,23 @@ class VoiceInputApp:
         if previous_clipboard is not None:
             self._write_clipboard(previous_clipboard)
 
+    def _set_mute_state(self, mute: bool) -> None:
+        if sys.platform != "darwin":
+            return
+        state = "with" if mute else "without"
+        subprocess.run(["osascript", "-e", f"set volume {state} output muted"], check=False)
+
+    def _get_mute_state(self) -> bool:
+        if sys.platform != "darwin":
+            return False
+        result = subprocess.run(
+            ["osascript", "-e", "output muted of (get volume settings)"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.stdout.strip().lower() == "true"
+
     @staticmethod
     def _read_clipboard() -> Optional[str]:
         result = subprocess.run(
@@ -439,11 +475,21 @@ def main() -> int:
         print(exc, file=sys.stderr)
         return 2
 
+    def _shutdown(signum: int, _frame: object) -> None:
+        print(f"\nReceived signal {signum}, shutting down.", flush=True)
+        monitor = getattr(app, "_fn_monitor", None)
+        if monitor is not None:
+            monitor.stop()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+
     try:
         app.run()
     except KeyboardInterrupt:
         print("\nExiting.", flush=True)
-        return 0
+    finally:
+        if app.config.mute_during_recording:
+            app._set_mute_state(False)
     return 0
 
 

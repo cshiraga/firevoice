@@ -106,8 +106,13 @@ stop_app_inner() {
     sleep 0.25
   done
 
-  echo "Process $pid did not stop in time." >&2
-  return 1
+  echo "Process $pid did not stop in time, force killing..." >&2
+  kill -9 "$pid" 2>/dev/null || true
+  sleep 0.5
+  rm -f "$PID_FILE"
+  rm -f "$LOG_FILE"
+  echo "Force killed voice-input (PID $pid)."
+  return 0
 }
 
 stop_app() {
