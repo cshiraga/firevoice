@@ -7,6 +7,7 @@ It records your voice while you hold a trigger key (e.g., `fn`), then transcribe
 
 - **100% Local & Private**: All transcription is done on your machine. No audio data or transcripts are ever sent to external APIs (OpenAI, Google, etc.).
 - **High Accuracy**: Uses the `small` Whisper model by default for high-quality Japanese and technical term recognition.
+- **Auto-Mute** *(macOS only)*: Automatically mutes your system audio while recording to prevent speakers from interfering with your voice. Can be disabled via `VOICE_MUTE_DURING_RECORDING=false`.
 - **Custom Replacements**: Automatically fix common misspellings or enforce styling (e.g., "ジェミニ" -> "Gemini") via `voice-replacements.json`.
 - **Privacy First**: Audio files are deleted immediately after transcription. No text logs are stored after stopping the service.
 - **Fast Input**: Paste-based input ensures quick and reliable text insertion into any application.
@@ -78,6 +79,7 @@ Feel free to modify this file to suit your own workflow or language. If you don'
 | `WHISPER_MODEL` | Whisper model size (`base`, `small`, `medium`) | `small` |
 | `VOICE_OUTPUT_MODE` | Output method (`paste` or `type`) | `paste` |
 | `VOICE_REPLACEMENTS_FILE` | Path to custom replacements JSON | `./voice-replacements.json` |
+| `VOICE_MUTE_DURING_RECORDING` | Mute system audio while recording *(macOS only)* | `true` |
 | `PYTHON_BIN` | Python executable path | `./.venv/bin/python` |
 
 ## 🔄 Updating
