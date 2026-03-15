@@ -44,7 +44,7 @@ class Config:
     dtype: str = "int16"
     language: str = "ja"
     model_size: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "small"))
-    trigger_key_name: str = field(default_factory=lambda: os.getenv("VOICE_TRIGGER_KEY", "f8"))
+    trigger_key_name: str = field(default_factory=lambda: os.getenv("VOICE_TRIGGER_KEY", "fn"))
     output_mode: str = field(default_factory=lambda: os.getenv("VOICE_OUTPUT_MODE", "paste"))
     replacements_file: Path = field(default_factory=default_replacements_path)
     mute_during_recording: bool = field(
@@ -204,6 +204,9 @@ class FnKeyMonitor:
             Quartz.CFRunLoopStop(self._run_loop)
 
     def _handle_event(self, _proxy, event_type, event, _refcon):
+        if event_type == Quartz.kCGEventTapDisabledByTimeout:
+            Quartz.CGEventTapEnable(self._tap, True)
+            return event
         if event_type != Quartz.kCGEventFlagsChanged:
             return event
 
@@ -288,7 +291,7 @@ class VoiceInputApp:
         )
         self.recorder = AudioRecorder(config)
         self.trigger_held = False
-        self._was_muted = False
+
         self._muted_by_us = False
         self.replacements = load_replacements(config.replacements_file)
         self.jobs: queue.Queue[np.ndarray] = queue.Queue()
@@ -347,8 +350,8 @@ class VoiceInputApp:
         self.trigger_held = True
         try:
             if self.config.mute_during_recording:
-                self._was_muted = self._get_mute_state()
-                if not self._was_muted:
+                was_muted = self._get_mute_state()
+                if not was_muted:
                     self._set_mute_state(True)
                     self._muted_by_us = True
             self.recorder.start()

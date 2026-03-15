@@ -45,19 +45,16 @@ cleanup_stale_pid() {
   fi
 }
 
-restore_mute() {
-  if [[ "$(uname)" == "Darwin" ]]; then
-    local muted
-    muted="$(osascript -e 'output muted of (get volume settings)' 2>/dev/null || true)"
-    if [[ "$muted" == "true" ]]; then
-      osascript -e 'set volume without output muted' 2>/dev/null || true
-      echo "Restored system audio (unmuted)."
-    fi
-  fi
-}
+
 
 start_app() {
   ensure_runtime_dir
+
+  # Force unmute on start in case a previous instance was killed
+  # while the system was muted.
+  if [[ "$(uname)" == "Darwin" ]]; then
+    osascript -e 'set volume without output muted' 2>/dev/null || true
+  fi
 
   if [[ ! -x "$PYTHON_BIN" ]]; then
     echo "Python executable not found: $PYTHON_BIN" >&2
@@ -112,7 +109,6 @@ stop_app_inner() {
       rm -f "$PID_FILE"
       rm -f "$LOG_FILE"
       echo "Stopped voice-input (PID $pid) and cleaned up logs."
-      restore_mute
       return 0
     fi
     sleep 0.25
@@ -130,7 +126,6 @@ stop_app_inner() {
   rm -f "$PID_FILE"
   rm -f "$LOG_FILE"
   echo "Force killed voice-input (PID $pid)."
-  restore_mute
   return 0
 }
 
