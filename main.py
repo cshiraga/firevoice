@@ -49,10 +49,13 @@ class Config:
         default_factory=lambda: os.getenv("VOICE_MUTE_DURING_RECORDING", "true").lower() == "true"
     )
     initial_prompt: str = (
-
-        "こんにちは。こちらは音声入力のツールです。Gemini, Claude, ChatGPT, GitHub, Slack, API, GCP, AWS, Azure, "
-        "Python, JavaScript, TypeScript, Node.js, JSON, YAML, Docker, Kubernetes, "
-        "Terraform, Ansible などのエンジニアリング用語が含まれます。句読点を含め、正確に書き起こしてください。"
+        "GitHubでプルリクエストをマージして、CI/CDパイプラインを回す。"
+        "Python、TypeScript、Node.jsでDockerコンテナを構築する。"
+        "Gemini、Claude、ChatGPTなどのAIモデルを活用し、"
+        "Terraform、Ansible、Kubernetesでインフラを管理する。"
+        "AWS、Azureのクラウドサービスと連携して、APIをデプロイする。"
+        "GCPのプロジェクトでYAML、JSONの設定ファイルを編集する。"
+        "Slackで通知を受け取り、コードレビューを行う。"
     )
 
 
@@ -171,7 +174,7 @@ class FnKeyMonitor:
         self._tap = Quartz.CGEventTapCreate(
             Quartz.kCGSessionEventTap,
             Quartz.kCGHeadInsertEventTap,
-            Quartz.kCGEventTapOptionDefault,
+            Quartz.kCGEventTapOptionListenOnly,
             event_mask,
             self._handle_event,
             None,
@@ -202,9 +205,6 @@ class FnKeyMonitor:
             Quartz.CFRunLoopStop(self._run_loop)
 
     def _handle_event(self, _proxy, event_type, event, _refcon):
-        if event_type == Quartz.kCGEventTapDisabledByTimeout:
-            Quartz.CGEventTapEnable(self._tap, True)
-            return event
         if event_type != Quartz.kCGEventFlagsChanged:
             return event
 
@@ -284,11 +284,11 @@ class VoiceInputApp:
         )
         self.recorder = AudioRecorder(config)
         self.trigger_held = False
+        self._trigger_key_physically_down = False
+        self._busy = False
 
         self._muted_by_us = False
         self.replacements = load_replacements(config.replacements_file)
-        self.jobs: queue.Queue[np.ndarray] = queue.Queue()
-        self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._trigger_events: queue.Queue[str] = queue.Queue()
         self._trigger_worker = threading.Thread(target=self._trigger_loop, daemon=True)
         self._model: Optional[WhisperModel] = None
@@ -299,7 +299,6 @@ class VoiceInputApp:
         pyautogui.PAUSE = 0
 
     def run(self) -> None:
-        self.worker.start()
         self._trigger_worker.start()
         print("")
         print("  🎙️  Voice Input", flush=True)
@@ -358,14 +357,19 @@ class VoiceInputApp:
 
     def _on_press(self, key: object) -> None:
         if self.trigger_key is not None and key_matches(key, self.trigger_key):
+            self._trigger_key_physically_down = True
             self._enqueue_press()
 
     def _on_release(self, key: object) -> None:
         if self.trigger_key is not None and key_matches(key, self.trigger_key):
+            self._trigger_key_physically_down = False
             self._enqueue_release()
 
     def _handle_trigger_press(self) -> None:
         if self.trigger_held:
+            return
+        if self._busy:
+            print("  ⏳  Still processing previous recording. Please wait.", flush=True)
             return
 
         self.trigger_held = True
@@ -393,31 +397,35 @@ class VoiceInputApp:
         except Exception as exc:
             print(f"  ❌  Failed to stop recording: {exc}", flush=True)
 
-        # Queue audio for transcription immediately, before unmuting.
-        # The worker thread can start transcription while we unmute.
-        if audio is not None:
-            self.jobs.put(audio)
-
         if self._muted_by_us:
             self._set_mute_state(False)
             self._muted_by_us = False
 
-    def _worker_loop(self) -> None:
-        while True:
-            audio = self.jobs.get()
-            try:
-                text = self._transcribe(audio)
-                if text:
-                    normalized_text = apply_replacements(text, self.replacements)
-                    # For privacy, we don't print the transcribed text to the log.
-                    # Only the system status is printed.
-                    self._insert_text(normalized_text)
-                else:
-                    pass
-            except Exception as exc:
-                print(f"  ❌  Transcription failed: {exc}", flush=True)
-            finally:
-                self.jobs.task_done()
+        if audio is not None:
+            self._busy = True
+            threading.Thread(
+                target=self._process_audio, args=(audio,), daemon=True
+            ).start()
+
+    def _process_audio(self, audio: np.ndarray) -> None:
+        """Transcribe audio and insert the resulting text."""
+        try:
+            text = self._transcribe(audio)
+            if text:
+                normalized_text = apply_replacements(text, self.replacements)
+                self._insert_text(normalized_text)
+        except Exception as exc:
+            print(f"  ❌  Transcription failed: {exc}", flush=True)
+        finally:
+            # Drain stale trigger events that accumulated while busy,
+            # so they don't cause unintended recordings.
+            while not self._trigger_events.empty():
+                try:
+                    self._trigger_events.get_nowait()
+                except queue.Empty:
+                    break
+            self.trigger_held = False
+            self._busy = False
 
     def _get_model(self) -> WhisperModel:
         with self._model_lock:
@@ -450,13 +458,23 @@ class VoiceInputApp:
             pyautogui.write(text, interval=0.01)
             return
 
-        previous_clipboard = self._read_clipboard()
-        self._write_clipboard(text)
-        pyautogui.hotkey("command", "v")
-        time.sleep(0.05)
+        # Wait until the trigger key is physically released before pasting.
+        # For FN triggers, check _fn_monitor._fn_down; for pynput triggers,
+        # check _trigger_key_physically_down.  Both track the physical key
+        # state independently of _busy / trigger_held to avoid pasting
+        # while a modifier is held (which would alter the Cmd+V shortcut).
+        while (
+            self.trigger_held
+            or self._trigger_key_physically_down
+            or (self._fn_monitor is not None and self._fn_monitor._fn_down)
+        ):
+            time.sleep(0.05)
 
-        if previous_clipboard is not None:
-            self._write_clipboard(previous_clipboard)
+        self._write_clipboard(text)
+        pyautogui.hotkey("command", "v", interval=0.02)
+        # Allow enough time for the paste to complete before any
+        # subsequent clipboard operation (e.g. the next transcription).
+        time.sleep(0.15)
 
     def _set_mute_state(self, mute: bool) -> None:
         if sys.platform != "darwin":
@@ -484,18 +502,6 @@ class VoiceInputApp:
             check=False,
         )
         return result.stdout.strip().lower() == "true"
-
-    @staticmethod
-    def _read_clipboard() -> Optional[str]:
-        result = subprocess.run(
-            ["pbpaste"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            return None
-        return result.stdout
 
     @staticmethod
     def _write_clipboard(text: str) -> None:
