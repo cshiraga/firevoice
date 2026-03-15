@@ -48,15 +48,7 @@ class Config:
     mute_during_recording: bool = field(
         default_factory=lambda: os.getenv("VOICE_MUTE_DURING_RECORDING", "true").lower() == "true"
     )
-    initial_prompt: str = (
-        "GitHubでプルリクエストをマージして、CI/CDパイプラインを回す。"
-        "Python、TypeScript、Node.jsでDockerコンテナを構築する。"
-        "Gemini、Claude、ChatGPTなどのAIモデルを活用し、"
-        "Terraform、Ansible、Kubernetesでインフラを管理する。"
-        "AWS、Azureのクラウドサービスと連携して、APIをデプロイする。"
-        "GCPのプロジェクトでYAML、JSONの設定ファイルを編集する。"
-        "Slackで通知を受け取り、コードレビューを行う。"
-    )
+    initial_prompt: str = ""
 
 
 def load_replacements(path: Path) -> list[tuple[str, str]]:
@@ -86,6 +78,23 @@ def load_replacements(path: Path) -> list[tuple[str, str]]:
         replacements.append((source, target))
 
     return replacements
+
+
+def build_initial_prompt(replacements: list[tuple[str, str]]) -> str:
+    """Build a Whisper initial_prompt from replacement target values.
+
+    Whisper uses the initial_prompt as a vocabulary hint, so listing the
+    expected output terms helps it transcribe technical jargon correctly.
+    The prompt is assembled by collecting unique replacement targets and
+    joining them with the Japanese reading-point (、).
+    """
+    seen: set[str] = set()
+    keywords: list[str] = []
+    for _source, target in replacements:
+        if target not in seen:
+            seen.add(target)
+            keywords.append(target)
+    return "、".join(keywords)
 
 
 def apply_replacements(text: str, replacements: list[tuple[str, str]]) -> str:
@@ -289,6 +298,8 @@ class VoiceInputApp:
 
         self._muted_by_us = False
         self.replacements = load_replacements(config.replacements_file)
+        if not config.initial_prompt:
+            config.initial_prompt = build_initial_prompt(self.replacements)
         self._trigger_events: queue.Queue[str] = queue.Queue()
         self._trigger_worker = threading.Thread(target=self._trigger_loop, daemon=True)
         self._model: Optional[WhisperModel] = None
