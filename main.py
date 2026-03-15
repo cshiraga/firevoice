@@ -284,11 +284,10 @@ class VoiceInputApp:
         )
         self.recorder = AudioRecorder(config)
         self.trigger_held = False
+        self._busy = False
 
         self._muted_by_us = False
         self.replacements = load_replacements(config.replacements_file)
-        self.jobs: queue.Queue[np.ndarray] = queue.Queue()
-        self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._trigger_events: queue.Queue[str] = queue.Queue()
         self._trigger_worker = threading.Thread(target=self._trigger_loop, daemon=True)
         self._model: Optional[WhisperModel] = None
@@ -299,7 +298,6 @@ class VoiceInputApp:
         pyautogui.PAUSE = 0
 
     def run(self) -> None:
-        self.worker.start()
         self._trigger_worker.start()
         print("")
         print("  🎙️  Voice Input", flush=True)
@@ -367,6 +365,9 @@ class VoiceInputApp:
     def _handle_trigger_press(self) -> None:
         if self.trigger_held:
             return
+        if self._busy:
+            print("  ⏳  Still processing previous recording. Please wait.", flush=True)
+            return
 
         self.trigger_held = True
         try:
@@ -393,31 +394,35 @@ class VoiceInputApp:
         except Exception as exc:
             print(f"  ❌  Failed to stop recording: {exc}", flush=True)
 
-        # Queue audio for transcription immediately, before unmuting.
-        # The worker thread can start transcription while we unmute.
-        if audio is not None:
-            self.jobs.put(audio)
-
         if self._muted_by_us:
             self._set_mute_state(False)
             self._muted_by_us = False
 
-    def _worker_loop(self) -> None:
-        while True:
-            audio = self.jobs.get()
-            try:
-                text = self._transcribe(audio)
-                if text:
-                    normalized_text = apply_replacements(text, self.replacements)
-                    # For privacy, we don't print the transcribed text to the log.
-                    # Only the system status is printed.
-                    self._insert_text(normalized_text)
-                else:
-                    pass
-            except Exception as exc:
-                print(f"  ❌  Transcription failed: {exc}", flush=True)
-            finally:
-                self.jobs.task_done()
+        if audio is not None:
+            self._busy = True
+            threading.Thread(
+                target=self._process_audio, args=(audio,), daemon=True
+            ).start()
+
+    def _process_audio(self, audio: np.ndarray) -> None:
+        """Transcribe audio and insert the resulting text."""
+        try:
+            text = self._transcribe(audio)
+            if text:
+                normalized_text = apply_replacements(text, self.replacements)
+                self._insert_text(normalized_text)
+        except Exception as exc:
+            print(f"  ❌  Transcription failed: {exc}", flush=True)
+        finally:
+            # Drain stale trigger events that accumulated while busy,
+            # so they don't cause unintended recordings.
+            while not self._trigger_events.empty():
+                try:
+                    self._trigger_events.get_nowait()
+                except queue.Empty:
+                    break
+            self.trigger_held = False
+            self._busy = False
 
     def _get_model(self) -> WhisperModel:
         with self._model_lock:
@@ -450,10 +455,11 @@ class VoiceInputApp:
             pyautogui.write(text, interval=0.01)
             return
 
-        # Wait until the trigger key is released before pasting.
-        # If FN is held (e.g. user is recording the next utterance),
-        # the modifier flag can interfere with Cmd+V.
-        while self.trigger_held:
+        # Wait until the trigger key is physically released before pasting.
+        # Check both the logical state (trigger_held) and the physical
+        # FN key state (_fn_down) since _busy may block trigger_held
+        # from being set even though FN is physically pressed.
+        while self.trigger_held or (self._fn_monitor is not None and self._fn_monitor._fn_down):
             time.sleep(0.05)
 
         self._write_clipboard(text)
