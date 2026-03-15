@@ -284,6 +284,7 @@ class VoiceInputApp:
         )
         self.recorder = AudioRecorder(config)
         self.trigger_held = False
+        self._trigger_key_physically_down = False
         self._busy = False
 
         self._muted_by_us = False
@@ -356,10 +357,12 @@ class VoiceInputApp:
 
     def _on_press(self, key: object) -> None:
         if self.trigger_key is not None and key_matches(key, self.trigger_key):
+            self._trigger_key_physically_down = True
             self._enqueue_press()
 
     def _on_release(self, key: object) -> None:
         if self.trigger_key is not None and key_matches(key, self.trigger_key):
+            self._trigger_key_physically_down = False
             self._enqueue_release()
 
     def _handle_trigger_press(self) -> None:
@@ -456,10 +459,15 @@ class VoiceInputApp:
             return
 
         # Wait until the trigger key is physically released before pasting.
-        # Check both the logical state (trigger_held) and the physical
-        # FN key state (_fn_down) since _busy may block trigger_held
-        # from being set even though FN is physically pressed.
-        while self.trigger_held or (self._fn_monitor is not None and self._fn_monitor._fn_down):
+        # For FN triggers, check _fn_monitor._fn_down; for pynput triggers,
+        # check _trigger_key_physically_down.  Both track the physical key
+        # state independently of _busy / trigger_held to avoid pasting
+        # while a modifier is held (which would alter the Cmd+V shortcut).
+        while (
+            self.trigger_held
+            or self._trigger_key_physically_down
+            or (self._fn_monitor is not None and self._fn_monitor._fn_down)
+        ):
             time.sleep(0.05)
 
         self._write_clipboard(text)
@@ -494,18 +502,6 @@ class VoiceInputApp:
             check=False,
         )
         return result.stdout.strip().lower() == "true"
-
-    @staticmethod
-    def _read_clipboard() -> Optional[str]:
-        result = subprocess.run(
-            ["pbpaste"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            return None
-        return result.stdout
 
     @staticmethod
     def _write_clipboard(text: str) -> None:
