@@ -49,10 +49,13 @@ class Config:
         default_factory=lambda: os.getenv("VOICE_MUTE_DURING_RECORDING", "true").lower() == "true"
     )
     initial_prompt: str = (
-
-        "こんにちは。こちらは音声入力のツールです。Gemini, Claude, ChatGPT, GitHub, Slack, API, GCP, AWS, Azure, "
-        "Python, JavaScript, TypeScript, Node.js, JSON, YAML, Docker, Kubernetes, "
-        "Terraform, Ansible などのエンジニアリング用語が含まれます。句読点を含め、正確に書き起こしてください。"
+        "GitHubでプルリクエストをマージして、CI/CDパイプラインを回す。"
+        "Python、TypeScript、Node.jsでDockerコンテナを構築する。"
+        "Gemini、Claude、ChatGPTなどのAIモデルを活用し、"
+        "Terraform、Ansible、Kubernetesでインフラを管理する。"
+        "AWS、Azureのクラウドサービスと連携して、APIをデプロイする。"
+        "GCPのプロジェクトでYAML、JSONの設定ファイルを編集する。"
+        "Slackで通知を受け取り、コードレビューを行う。"
     )
 
 
@@ -454,7 +457,7 @@ class VoiceInputApp:
             time.sleep(0.05)
 
         self._write_clipboard(text)
-        pyautogui.hotkey("command", "v")
+        pyautogui.hotkey("command", "v", interval=0.02)
         # Allow enough time for the paste to complete before any
         # subsequent clipboard operation (e.g. the next transcription).
         time.sleep(0.15)
