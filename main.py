@@ -6,7 +6,6 @@ import queue
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,7 +17,6 @@ import pyautogui
 import sounddevice as sd
 from faster_whisper import WhisperModel
 from pynput import keyboard
-from scipy.io import wavfile
 
 
 Trigger = Union[keyboard.Key, keyboard.KeyCode]
@@ -296,6 +294,8 @@ class VoiceInputApp:
         self.replacements = load_replacements(config.replacements_file)
         self.jobs: queue.Queue[np.ndarray] = queue.Queue()
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self._trigger_events: queue.Queue[str] = queue.Queue()
+        self._trigger_worker = threading.Thread(target=self._trigger_loop, daemon=True)
         self._model: Optional[WhisperModel] = None
         self._model_lock = threading.Lock()
         self._fn_monitor: Optional[FnKeyMonitor] = None
@@ -305,6 +305,7 @@ class VoiceInputApp:
 
     def run(self) -> None:
         self.worker.start()
+        self._trigger_worker.start()
         print("Voice input tool is running.", flush=True)
         print(f"Trigger key: {self.trigger_key_name}", flush=True)
         print(f"Whisper model: {self.config.model_size}", flush=True)
@@ -321,8 +322,8 @@ class VoiceInputApp:
         if self.trigger_key_name == FN_TRIGGER_NAME:
             print("Using native macOS monitoring for the fn/globe key.", flush=True)
             self._fn_monitor = FnKeyMonitor(
-                on_press=self._handle_trigger_press,
-                on_release=self._handle_trigger_release,
+                on_press=self._enqueue_press,
+                on_release=self._enqueue_release,
             )
             self._fn_monitor.start()
             return
@@ -335,13 +336,33 @@ class VoiceInputApp:
         with self._listener as listener:
             listener.join()
 
+    def _enqueue_press(self) -> None:
+        self._trigger_events.put("press")
+
+    def _enqueue_release(self) -> None:
+        self._trigger_events.put("release")
+
+    def _trigger_loop(self) -> None:
+        """Process trigger key events sequentially.
+
+        Running press/release handling in a dedicated thread ensures that
+        the Quartz event-tap callback (or pynput listener callback) returns
+        immediately, preventing macOS from disabling the tap due to timeout.
+        """
+        while True:
+            event = self._trigger_events.get()
+            if event == "press":
+                self._handle_trigger_press()
+            elif event == "release":
+                self._handle_trigger_release()
+
     def _on_press(self, key: object) -> None:
         if self.trigger_key is not None and key_matches(key, self.trigger_key):
-            self._handle_trigger_press()
+            self._enqueue_press()
 
     def _on_release(self, key: object) -> None:
         if self.trigger_key is not None and key_matches(key, self.trigger_key):
-            self._handle_trigger_release()
+            self._enqueue_release()
 
     def _handle_trigger_press(self) -> None:
         if self.trigger_held:
@@ -350,9 +371,8 @@ class VoiceInputApp:
         self.trigger_held = True
         try:
             if self.config.mute_during_recording:
-                was_muted = self._get_mute_state()
-                if not was_muted:
-                    self._set_mute_state(True)
+                was_already_muted = self._mute_and_check_previous()
+                if not was_already_muted:
                     self._muted_by_us = True
             self.recorder.start()
         except Exception as exc:
@@ -372,13 +392,18 @@ class VoiceInputApp:
             audio = self.recorder.stop()
         except Exception as exc:
             print(f"Failed to stop recording: {exc}", flush=True)
-        finally:
-            if self._muted_by_us:
-                self._set_mute_state(False)
-                self._muted_by_us = False
 
+        # Queue audio for transcription immediately, before unmuting.
+        # Unmuting is done asynchronously since it doesn't affect the
+        # recorded audio and avoids blocking the start of transcription.
         if audio is not None:
             self.jobs.put(audio)
+
+        if self._muted_by_us:
+            self._muted_by_us = False
+            threading.Thread(
+                target=self._set_mute_state, args=(False,), daemon=True
+            ).start()
 
     def _worker_loop(self) -> None:
         while True:
@@ -409,22 +434,19 @@ class VoiceInputApp:
             return self._model
 
     def _transcribe(self, audio: np.ndarray) -> str:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            wav_path = Path(tmp.name)
+        # Convert int16 samples to float32 in [-1.0, 1.0] range as expected
+        # by faster-whisper when passing a numpy array directly.
+        audio_f32 = audio.astype(np.float32).flatten() / 32768.0
 
-        try:
-            wavfile.write(wav_path, self.config.sample_rate, audio)
-            model = self._get_model()
-            segments, _info = model.transcribe(
-                str(wav_path),
-                language=self.config.language,
-                vad_filter=True,
-                beam_size=5,
-                initial_prompt=self.config.initial_prompt,
-            )
-            return "".join(segment.text for segment in segments).strip()
-        finally:
-            wav_path.unlink(missing_ok=True)
+        model = self._get_model()
+        segments, _info = model.transcribe(
+            audio_f32,
+            language=self.config.language,
+            vad_filter=True,
+            beam_size=5,
+            initial_prompt=self.config.initial_prompt,
+        )
+        return "".join(segment.text for segment in segments).strip()
 
     def _insert_text(self, text: str) -> None:
         if self.config.output_mode == "type":
@@ -433,7 +455,6 @@ class VoiceInputApp:
 
         previous_clipboard = self._read_clipboard()
         self._write_clipboard(text)
-        time.sleep(0.05)
         pyautogui.hotkey("command", "v")
         time.sleep(0.05)
 
@@ -446,11 +467,21 @@ class VoiceInputApp:
         state = "with" if mute else "without"
         subprocess.run(["osascript", "-e", f"set volume {state} output muted"], check=False)
 
-    def _get_mute_state(self) -> bool:
+    def _mute_and_check_previous(self) -> bool:
+        """Mute the system output and return whether it was already muted.
+
+        Combines the mute-state check and mute-set into a single osascript
+        invocation to reduce the latency before recording starts.
+        """
         if sys.platform != "darwin":
             return False
+        script = (
+            "set old to output muted of (get volume settings)\n"
+            "set volume with output muted\n"
+            "return old"
+        )
         result = subprocess.run(
-            ["osascript", "-e", "output muted of (get volume settings)"],
+            ["osascript", "-e", script],
             capture_output=True,
             text=True,
             check=False,
