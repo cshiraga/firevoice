@@ -232,7 +232,12 @@ class AudioRecorder:
     def __init__(self, config: Config) -> None:
         self.config = config
         self._frames: list[np.ndarray] = []
-        self._stream: Optional[sd.InputStream] = None
+        self._stream = sd.InputStream(
+            samplerate=config.sample_rate,
+            channels=config.channels,
+            dtype=config.dtype,
+            callback=self._callback,
+        )
         self._lock = threading.Lock()
         self._recording = False
 
@@ -242,39 +247,29 @@ class AudioRecorder:
                 return
 
             self._frames = []
-            self._stream = sd.InputStream(
-                samplerate=self.config.sample_rate,
-                channels=self.config.channels,
-                dtype=self.config.dtype,
-                callback=self._callback,
-            )
             self._stream.start()
             self._recording = True
-            print("Recording started...", flush=True)
+            print("  🔴  Recording...", flush=True)
 
     def stop(self) -> Optional[np.ndarray]:
         with self._lock:
-            if not self._recording or self._stream is None:
+            if not self._recording:
                 return None
 
-            stream = self._stream
-            self._stream = None
+            self._stream.stop()
             self._recording = False
 
-        stream.stop()
-        stream.close()
-
         if not self._frames:
-            print("No audio captured.", flush=True)
+            print("  ⚠️  No audio captured.", flush=True)
             return None
 
-        print("Recording stopped.", flush=True)
+        print("  ⏹️  Recording stopped. Transcribing...", flush=True)
         return np.concatenate(self._frames, axis=0)
 
     def _callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
         del frames, time_info
         if status:
-            print(f"Audio status: {status}", flush=True)
+            print(f"  ⚠️  Audio status: {status}", flush=True)
         self._frames.append(indata.copy())
 
 
@@ -306,21 +301,26 @@ class VoiceInputApp:
     def run(self) -> None:
         self.worker.start()
         self._trigger_worker.start()
-        print("Voice input tool is running.", flush=True)
-        print(f"Trigger key: {self.trigger_key_name}", flush=True)
-        print(f"Whisper model: {self.config.model_size}", flush=True)
-        print(
-            f"Replacement rules: {len(self.replacements)} "
-            f"from {self.config.replacements_file}",
-            flush=True,
-        )
-        print("Hold the trigger key to record, release it to transcribe and paste.", flush=True)
+        print("")
+        print("  🎙️  Voice Input", flush=True)
+        print("  ─────────────────────────────────", flush=True)
+        print(f"  🔑  Trigger key    : {self.trigger_key_name}", flush=True)
+        print(f"  🧠  Whisper model  : {self.config.model_size}", flush=True)
+        print(f"  📖  Replacements   : {len(self.replacements)} rules", flush=True)
+        print(f"  🔇  Auto-mute      : {'on' if self.config.mute_during_recording else 'off'}", flush=True)
+        print("  ─────────────────────────────────", flush=True)
+        print("")
 
         # Pre-load the model so the first transcription is fast.
+        print("  ⏳  Loading Whisper model...", flush=True)
         self._get_model()
+        print("  ✅  Model loaded. Ready!", flush=True)
+        print("")
+        print("  🎤  Hold the trigger key to record, release to transcribe.", flush=True)
+        print("", flush=True)
 
         if self.trigger_key_name == FN_TRIGGER_NAME:
-            print("Using native macOS monitoring for the fn/globe key.", flush=True)
+            print("  🍎  Using native macOS fn/globe key monitoring.", flush=True)
             self._fn_monitor = FnKeyMonitor(
                 on_press=self._enqueue_press,
                 on_release=self._enqueue_release,
@@ -380,7 +380,7 @@ class VoiceInputApp:
             if self._muted_by_us:
                 self._set_mute_state(False)
                 self._muted_by_us = False
-            print(f"Failed to start recording: {exc}", flush=True)
+            print(f"  ❌  Failed to start recording: {exc}", flush=True)
 
     def _handle_trigger_release(self) -> None:
         if not self.trigger_held:
@@ -391,19 +391,16 @@ class VoiceInputApp:
         try:
             audio = self.recorder.stop()
         except Exception as exc:
-            print(f"Failed to stop recording: {exc}", flush=True)
+            print(f"  ❌  Failed to stop recording: {exc}", flush=True)
 
         # Queue audio for transcription immediately, before unmuting.
-        # Unmuting is done asynchronously since it doesn't affect the
-        # recorded audio and avoids blocking the start of transcription.
+        # The worker thread can start transcription while we unmute.
         if audio is not None:
             self.jobs.put(audio)
 
         if self._muted_by_us:
+            self._set_mute_state(False)
             self._muted_by_us = False
-            threading.Thread(
-                target=self._set_mute_state, args=(False,), daemon=True
-            ).start()
 
     def _worker_loop(self) -> None:
         while True:
@@ -418,14 +415,14 @@ class VoiceInputApp:
                 else:
                     pass
             except Exception as exc:
-                print(f"Transcription failed: {exc}", flush=True)
+                print(f"  ❌  Transcription failed: {exc}", flush=True)
             finally:
                 self.jobs.task_done()
 
     def _get_model(self) -> WhisperModel:
         with self._model_lock:
             if self._model is None:
-                print("Loading faster-whisper model...", flush=True)
+                print("  ⏳  Loading Whisper model...", flush=True)
                 self._model = WhisperModel(
                     self.config.model_size,
                     device="cpu",
@@ -518,7 +515,7 @@ def main() -> int:
         return 2
 
     def _shutdown(signum: int, _frame: object) -> None:
-        print(f"\nReceived signal {signum}, shutting down.", flush=True)
+        print(f"\n  🚫  Received signal {signum}, shutting down.", flush=True)
         if app._fn_monitor is not None:
             app._fn_monitor.stop()
         if app._listener is not None:
@@ -529,7 +526,7 @@ def main() -> int:
     try:
         app.run()
     except KeyboardInterrupt:
-        print("\nExiting.", flush=True)
+        print("\n  👋  Exiting.", flush=True)
     finally:
         if app._muted_by_us:
             app._set_mute_state(False)
