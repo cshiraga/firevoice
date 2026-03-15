@@ -171,7 +171,7 @@ class FnKeyMonitor:
         self._tap = Quartz.CGEventTapCreate(
             Quartz.kCGSessionEventTap,
             Quartz.kCGHeadInsertEventTap,
-            Quartz.kCGEventTapOptionDefault,
+            Quartz.kCGEventTapOptionListenOnly,
             event_mask,
             self._handle_event,
             None,
@@ -202,9 +202,6 @@ class FnKeyMonitor:
             Quartz.CFRunLoopStop(self._run_loop)
 
     def _handle_event(self, _proxy, event_type, event, _refcon):
-        if event_type == Quartz.kCGEventTapDisabledByTimeout:
-            Quartz.CGEventTapEnable(self._tap, True)
-            return event
         if event_type != Quartz.kCGEventFlagsChanged:
             return event
 
@@ -450,13 +447,17 @@ class VoiceInputApp:
             pyautogui.write(text, interval=0.01)
             return
 
-        previous_clipboard = self._read_clipboard()
+        # Wait until the trigger key is released before pasting.
+        # If FN is held (e.g. user is recording the next utterance),
+        # the modifier flag can interfere with Cmd+V.
+        while self.trigger_held:
+            time.sleep(0.05)
+
         self._write_clipboard(text)
         pyautogui.hotkey("command", "v")
-        time.sleep(0.05)
-
-        if previous_clipboard is not None:
-            self._write_clipboard(previous_clipboard)
+        # Allow enough time for the paste to complete before any
+        # subsequent clipboard operation (e.g. the next transcription).
+        time.sleep(0.15)
 
     def _set_mute_state(self, mute: bool) -> None:
         if sys.platform != "darwin":
