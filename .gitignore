@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.voice-input/
+*.log
+*.wav
+*.pyc
+.DS_Store
