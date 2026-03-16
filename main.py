@@ -357,7 +357,7 @@ class VoiceInputApp:
     def run(self) -> None:
         self._trigger_worker.start()
         print("")
-        print("  🎙️  Voice Input", flush=True)
+        print("  🔥  Fire Voice", flush=True)
         print("  ─────────────────────────────────", flush=True)
         print(f"  🔑  Trigger key    : {self.trigger_key_name}", flush=True)
         print(f"  🧠  Whisper model  : {self.config.model_size}", flush=True)
