@@ -28,6 +28,52 @@ except ImportError:
     Quartz = None
 
 
+class StatusOverlay:
+    """Manages the floating status overlay as a child process."""
+
+    def __init__(self) -> None:
+        self._proc: Optional[subprocess.Popen] = None
+
+    def start(self) -> None:
+        script = str(Path(__file__).with_name("statusbar.py"))
+        try:
+            self._proc = subprocess.Popen(
+                [sys.executable, script],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as exc:
+            print(f"  ⚠️  Could not start status overlay: {exc}", flush=True)
+            self._proc = None
+
+    def set_state(self, state: str) -> None:
+        if self._proc is None or self._proc.stdin is None:
+            return
+        try:
+            self._proc.stdin.write(f"{state}\n".encode())
+            self._proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            self._proc = None
+
+    def stop(self) -> None:
+        if self._proc is None:
+            return
+        try:
+            if self._proc.stdin is not None:
+                self._proc.stdin.write(b"quit\n")
+                self._proc.stdin.flush()
+                self._proc.stdin.close()
+            self._proc.wait(timeout=3)
+        except Exception:
+            self._proc.kill()
+            try:
+                self._proc.wait(timeout=3)
+            except Exception:
+                pass
+        self._proc = None
+
+
 def default_replacements_path() -> Path:
     override = os.getenv("VOICE_REPLACEMENTS_FILE")
     if override:
@@ -306,13 +352,16 @@ class VoiceInputApp:
         self._model_lock = threading.Lock()
         self._fn_monitor: Optional[FnKeyMonitor] = None
         self._listener: Optional[keyboard.Listener] = None
+        self._status_icon: Optional[StatusOverlay] = None
+        if sys.platform == "darwin":
+            self._status_icon = StatusOverlay()
         pyautogui.FAILSAFE = False
         pyautogui.PAUSE = 0
 
     def run(self) -> None:
         self._trigger_worker.start()
         print("")
-        print("  🎙️  Voice Input", flush=True)
+        print("  🔥  Fire Voice", flush=True)
         print("  ─────────────────────────────────", flush=True)
         print(f"  🔑  Trigger key    : {self.trigger_key_name}", flush=True)
         print(f"  🧠  Whisper model  : {self.config.model_size}", flush=True)
@@ -328,6 +377,10 @@ class VoiceInputApp:
         print("")
         print("  🎤  Hold the trigger key to record, release to transcribe.", flush=True)
         print("", flush=True)
+
+        if self._status_icon is not None:
+            self._status_icon.start()
+            print("  📊  Status overlay active.", flush=True)
 
         if self.trigger_key_name == FN_TRIGGER_NAME:
             print("  🍎  Using native macOS fn/globe key monitoring.", flush=True)
@@ -385,6 +438,8 @@ class VoiceInputApp:
 
         self.trigger_held = True
         try:
+            if self._status_icon is not None:
+                self._status_icon.set_state("recording")
             if self.config.mute_during_recording:
                 was_already_muted = self._mute_and_check_previous()
                 if not was_already_muted:
@@ -414,9 +469,14 @@ class VoiceInputApp:
 
         if audio is not None:
             self._busy = True
+            if self._status_icon is not None:
+                self._status_icon.set_state("transcribing")
             threading.Thread(
                 target=self._process_audio, args=(audio,), daemon=True
             ).start()
+        else:
+            if self._status_icon is not None:
+                self._status_icon.set_state("idle")
 
     def _process_audio(self, audio: np.ndarray) -> None:
         """Transcribe audio and insert the resulting text."""
@@ -437,6 +497,8 @@ class VoiceInputApp:
                     break
             self.trigger_held = False
             self._busy = False
+            if self._status_icon is not None:
+                self._status_icon.set_state("idle")
 
     def _get_model(self) -> WhisperModel:
         with self._model_lock:
@@ -533,6 +595,8 @@ def main() -> int:
 
     def _shutdown(signum: int, _frame: object) -> None:
         print(f"\n  🚫  Received signal {signum}, shutting down.", flush=True)
+        if app._status_icon is not None:
+            app._status_icon.stop()
         if app._fn_monitor is not None:
             app._fn_monitor.stop()
         if app._listener is not None:

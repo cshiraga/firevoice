@@ -3,4 +3,4 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$SCRIPT_DIR/voice-input.sh" restart "$@"
+exec "$SCRIPT_DIR/firevoice.sh" restart "$@"

@@ -3,9 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNTIME_DIR="$SCRIPT_DIR/.voice-input"
-PID_FILE="$RUNTIME_DIR/voice-input.pid"
-LOG_FILE="$RUNTIME_DIR/voice-input.log"
+RUNTIME_DIR="$SCRIPT_DIR/.firevoice"
+PID_FILE="$RUNTIME_DIR/firevoice.pid"
+LOG_FILE="$RUNTIME_DIR/firevoice.log"
 PYTHON_BIN="${PYTHON_BIN:-$SCRIPT_DIR/.venv/bin/python}"
 APP_FILE="$SCRIPT_DIR/main.py"
 VOICE_TRIGGER_KEY="${VOICE_TRIGGER_KEY:-fn}"
@@ -39,7 +39,7 @@ trap 'spinner_stop' EXIT
 
 usage() {
   cat <<EOF
-Usage: ./voice-input.sh {start|stop|restart|status|logs}
+Usage: ./firevoice.sh {start|stop|restart|status|logs}
    or: ./{start|stop|restart|status|logs}
 
 Environment overrides:
@@ -75,7 +75,7 @@ cleanup_stale_pid() {
 
 
 start_app() {
-  echo "  🚀  Starting voice-input..."
+  echo "  🔥  Igniting FireVoice..."
   ensure_runtime_dir
 
   # Force unmute on start in case a previous instance was killed
@@ -111,7 +111,7 @@ start_app() {
   spinner_stop
 
   if kill -0 "$pid" 2>/dev/null; then
-    echo "  ✅  Started voice-input (PID: $pid)"
+    echo "  ✅  FireVoice is live (PID: $pid)"
     echo "  📄  Log: $LOG_FILE"
     exit 0
   fi
@@ -123,11 +123,11 @@ start_app() {
 }
 
 stop_app_inner() {
-  echo "  🛑  Stopping voice-input..."
+  echo "  🛑  Extinguishing FireVoice..."
   cleanup_stale_pid
 
   if ! is_running; then
-    echo "  ℹ️  voice-input is not running."
+    echo "  ℹ️  FireVoice is not running."
     return 0
   fi
 
@@ -141,7 +141,7 @@ stop_app_inner() {
       spinner_stop
       rm -f "$PID_FILE"
       rm -f "$LOG_FILE"
-      echo "  ✅  Stopped voice-input (PID: $pid)"
+      echo "  ✅  FireVoice stopped (PID: $pid)"
       return 0
     fi
     sleep 0.25
@@ -159,7 +159,7 @@ stop_app_inner() {
 
   rm -f "$PID_FILE"
   rm -f "$LOG_FILE"
-  echo "  ✅  Force killed voice-input (PID: $pid)"
+  echo "  ✅  FireVoice force killed (PID: $pid)"
   return 0
 }
 
@@ -174,10 +174,10 @@ status_app() {
   cleanup_stale_pid
 
   if is_running; then
-    echo "  🟢  voice-input is running (PID: $(read_pid))"
+    echo "  🔥  FireVoice is running (PID: $(read_pid))"
     echo "  📄  Log: $LOG_FILE"
   else
-    echo "  ⚪  voice-input is not running."
+    echo "  ⚪  FireVoice is not running."
   fi
 }
 

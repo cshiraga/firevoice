@@ -1,13 +1,29 @@
-# 🎙️ Voice Input (Faster-Whisper version)
+<p align="center">
+  <img src="logo.png" alt="Fire Voice" width="180" />
+</p>
 
-A lightweight, local voice-to-text input tool designed for macOS and Linux.  
-It records your voice while you hold a trigger key (e.g., `fn`), then transcribes it using **Faster-Whisper** and pastes it directly into your active window.
+<h1 align="center">🔥 Fire Voice</h1>
+
+<p align="center">
+  <strong>A blazing-fast, fully local voice-to-text tool for macOS.</strong><br/>
+  Hold a key, speak, release — your words appear instantly.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey" alt="macOS" />
+  <img src="https://img.shields.io/badge/engine-Faster--Whisper-orange" alt="Faster-Whisper" />
+  <img src="https://img.shields.io/badge/privacy-100%25_local-green" alt="100% Local" />
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
+</p>
+
+---
 
 ## ✨ Features
 
-- **100% Local & Private**: All transcription is done on your machine. No audio data or transcripts are ever sent to external APIs (OpenAI, Google, etc.).
+- **100% Local & Private**: All transcription is done on your machine. No audio data or transcripts are ever sent to external APIs.
 - **High Accuracy**: Uses the `small` Whisper model by default for high-quality Japanese and technical term recognition.
-- **Auto-Mute** *(macOS only)*: Automatically mutes your system audio while recording to prevent speakers from interfering with your voice. Can be disabled via `VOICE_MUTE_DURING_RECORDING=false`.
+- **Visual Status Overlay**: A floating pill-shaped widget at the bottom of the screen shows the current state (idle / recording / analyzing) with smooth animations.
+- **Auto-Mute** *(macOS only)*: Automatically mutes your system audio while recording to prevent speakers from interfering with your voice.
 - **Custom Replacements**: Automatically fix common misspellings or enforce styling (e.g., "ジェミニ" -> "Gemini") via `voice-replacements.json`.
 - **Privacy First**: Audio files are deleted immediately after transcription. No text logs are stored after stopping the service.
 - **Fast Input**: Paste-based input ensures quick and reliable text insertion into any application.
@@ -16,8 +32,8 @@ It records your voice while you hold a trigger key (e.g., `fn`), then transcribe
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/cshiraga/voice-input.git
-   cd voice-input
+   git clone https://github.com/cshiraga/firevoice.git
+   cd firevoice
    ```
 
 2. **Create a virtual environment**:
@@ -79,7 +95,7 @@ Feel free to modify this file to suit your own workflow or language. If you don'
 | `WHISPER_MODEL` | Whisper model size (`base`, `small`, `medium`) | `small` |
 | `VOICE_OUTPUT_MODE` | Output method (`paste` or `type`) | `paste` |
 | `VOICE_REPLACEMENTS_FILE` | Path to custom replacements JSON | `./voice-replacements.json` |
-| `VOICE_MUTE_DURING_RECORDING` | Mute system audio while recording *(macOS only)* | `true` |
+| `VOICE_MUTE_DURING_RECORDING` | Mute system audio while recording | `true` |
 | `PYTHON_BIN` | Python executable path | `./.venv/bin/python` |
 
 ## 🔄 Updating
