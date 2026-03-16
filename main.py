@@ -360,30 +360,20 @@ class VoiceInputApp:
 
     def run(self) -> None:
         self._trigger_worker.start()
-        print("")
-        print("  🔥  Fire Voice", flush=True)
-        print("  ─────────────────────────────────", flush=True)
-        print(f"  🔑  Trigger key    : {self.trigger_key_name}", flush=True)
-        print(f"  🧠  Whisper model  : {self.config.model_size}", flush=True)
-        print(f"  📖  Replacements   : {len(self.replacements)} rules", flush=True)
-        print(f"  🔇  Auto-mute      : {'on' if self.config.mute_during_recording else 'off'}", flush=True)
-        print("  ─────────────────────────────────", flush=True)
-        print("")
+        print("", flush=True)
+        print(f"  🔑  Trigger: {self.trigger_key_name}  |  🧠 Model: {self.config.model_size}  |  📝 {len(self.replacements)} rules", flush=True)
+        print("", flush=True)
 
         # Pre-load the model so the first transcription is fast.
         print("  ⏳  Loading Whisper model...", flush=True)
         self._get_model()
         print("  ✅  Model loaded. Ready!", flush=True)
-        print("")
-        print("  🎤  Hold the trigger key to record, release to transcribe.", flush=True)
         print("", flush=True)
 
         if self._status_icon is not None:
             self._status_icon.start()
-            print("  📊  Status overlay active.", flush=True)
 
         if self.trigger_key_name == FN_TRIGGER_NAME:
-            print("  🍎  Using native macOS fn/globe key monitoring.", flush=True)
             self._fn_monitor = FnKeyMonitor(
                 on_press=self._enqueue_press,
                 on_release=self._enqueue_release,
