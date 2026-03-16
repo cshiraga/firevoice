@@ -111,8 +111,26 @@ start_app() {
   spinner_stop
 
   if kill -0 "$pid" 2>/dev/null; then
-    echo "  ✅  FireVoice is live (PID: $pid)"
-    echo "  📄  Log: $LOG_FILE"
+    local trigger_key="${VOICE_TRIGGER_KEY:-fn}"
+    echo ""
+    echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "   🔥  F I R E V O I C E"
+    echo "       Voice-to-Text Engine"
+    echo ""
+    echo "   ✅  Running  (PID: $pid)"
+    echo "   ⌨   Trigger: $trigger_key"
+    echo ""
+    echo "   📖  How to use"
+    echo "   ├─  Hold [$trigger_key] key to start recording"
+    echo "   ├─  Release to transcribe"
+    echo "   └─  Text is pasted at cursor position"
+    echo ""
+    echo "   💡  ./logs  → view logs"
+    echo "       ./stop  → stop service"
+    echo ""
+    echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
     exit 0
   fi
 
