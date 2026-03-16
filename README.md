@@ -32,8 +32,8 @@
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/cshiraga/voice-input.git
-   cd voice-input
+   git clone https://github.com/cshiraga/firevoice.git
+   cd firevoice
    ```
 
 2. **Create a virtual environment**:

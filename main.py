@@ -67,6 +67,10 @@ class StatusOverlay:
             self._proc.wait(timeout=3)
         except Exception:
             self._proc.kill()
+            try:
+                self._proc.wait(timeout=3)
+            except Exception:
+                pass
         self._proc = None
 
 

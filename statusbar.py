@@ -1,4 +1,4 @@
-"""Floating status overlay for Voice Input  (runs as a child process).
+"""Floating status overlay for FireVoice  (runs as a child process).
 
 Displays an Aqua-Voice-inspired pill-shaped widget at the bottom centre
 of the screen.  The widget contains a coloured dot and animated waveform
@@ -48,19 +48,20 @@ BAR_MAX_HEIGHT = 20.0
 # Dot
 DOT_RADIUS = 5.0
 
-# Spinner (transcribing state)
-SPINNER_RADIUS = 10.0
-SPINNER_LINE_WIDTH = 2.5
-SPINNER_ARC_LENGTH = 120.0  # degrees
-SPINNER_SPEED = 12.0  # degrees per frame
+# Flame spinner (transcribing state)
+FLAME_RADIUS = 10.0
+FLAME_LINE_WIDTH = 2.5
+FLAME_SEGMENTS = 10
+FLAME_ARC_TOTAL = 150.0  # total degrees of flame trail
+FLAME_SPEED = 14.0  # degrees per frame
 
 # Colours  (R, G, B)
-PILL_BG = (0.12, 0.12, 0.14, 0.92)   # near-black, slightly transparent
+PILL_BG = (0.12, 0.12, 0.14, 1.0)    # near-black, fully opaque
 
 STATE_COLORS: dict[str, tuple[float, float, float]] = {
     "idle": (0.55, 0.55, 0.58),
     "recording": (1.0, 0.231, 0.188),     # #FF3B30
-    "transcribing": (1.0, 0.231, 0.188),  # same red as recording
+    "transcribing": (1.0, 0.231, 0.188),  # #FF3B30 (same red as recording)
 }
 
 ANIMATION_INTERVAL = 0.1  # 10 fps
@@ -151,36 +152,68 @@ class _PillView(AppKit.NSView):
                 accent.setFill()
                 bar_path.fill()
         else:
-            # -- spinner arc around the dot --
-            angle = frame_idx * SPINNER_SPEED
-            arc = AppKit.NSBezierPath.bezierPath()
-            arc.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
-                AppKit.NSMakePoint(dot_x, mid_y),
-                SPINNER_RADIUS,
-                angle,
-                angle + SPINNER_ARC_LENGTH,
-                False,
-            )
-            arc.setLineWidth_(SPINNER_LINE_WIDTH)
-            accent.setStroke()
-            arc.stroke()
+            # -- flame trail around the dot --
+            center = AppKit.NSMakePoint(dot_x, mid_y)
+            base_angle = frame_idx * FLAME_SPEED
 
-            # Second arc opposite side for balance
-            arc2 = AppKit.NSBezierPath.bezierPath()
-            arc2.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
-                AppKit.NSMakePoint(dot_x, mid_y),
-                SPINNER_RADIUS,
-                angle + 180.0,
-                angle + 180.0 + SPINNER_ARC_LENGTH,
-                False,
-            )
-            arc2.setLineWidth_(SPINNER_LINE_WIDTH)
-            # Slightly faded second arc
-            fade = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
-                r, g, b, 0.4,
-            )
-            fade.setStroke()
-            arc2.stroke()
+            # Draw segments from tail to head (head renders on top)
+            for i in range(FLAME_SEGMENTS):
+                t = i / float(FLAME_SEGMENTS - 1)  # 0=tail, 1=head
+
+                # Arc position
+                seg_len = FLAME_ARC_TOTAL / FLAME_SEGMENTS
+                seg_start = base_angle - FLAME_ARC_TOTAL + i * seg_len
+                seg_end = seg_start + seg_len + 2.0  # slight overlap
+
+                # Colour: tail (faded red) -> head (bright red)
+                cr = 1.0
+                cg = 0.1 + t * 0.15
+                cb = 0.05 + t * 0.1
+                ca = 0.12 + t * 0.88
+
+                # Organic flicker
+                flicker = 0.82 + 0.18 * math.sin(frame_idx * 0.7 + i * 1.2)
+                ca = min(ca * flicker, 1.0)
+
+                radius = FLAME_RADIUS
+
+                # Line width: thin tail -> thick head
+                lw = FLAME_LINE_WIDTH * (0.4 + t * 1.0)
+
+                seg = AppKit.NSBezierPath.bezierPath()
+                seg.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
+                    center, radius, seg_start, seg_end, False,
+                )
+                seg.setLineWidth_(lw)
+                color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                    cr, cg, cb, ca,
+                )
+                color.setStroke()
+                seg.stroke()
+
+            # Ember sparks near the flame head
+            for j in range(3):
+                spark_offset = -j * 12.0 + 4.0 * math.sin(
+                    frame_idx * 1.5 + j * 3.0,
+                )
+                spark_angle_rad = math.radians(base_angle + spark_offset)
+                sx = dot_x + FLAME_RADIUS * math.cos(spark_angle_rad)
+                sy = mid_y + FLAME_RADIUS * math.sin(spark_angle_rad)
+                spark_size = 1.5 + 1.0 * abs(math.sin(frame_idx * 1.2 + j))
+
+                spark_rect = AppKit.NSMakeRect(
+                    sx - spark_size / 2, sy - spark_size / 2,
+                    spark_size, spark_size,
+                )
+                spark_path = AppKit.NSBezierPath.bezierPathWithOvalInRect_(
+                    spark_rect,
+                )
+                spark_a = 0.75 - j * 0.2
+                spark_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                    1.0, 0.3, 0.15, spark_a,
+                )
+                spark_color.setFill()
+                spark_path.fill()
 
     # -- state updates (thread-safe) -----------------------------------------
 

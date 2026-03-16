@@ -1,6 +1,6 @@
 .venv/
 __pycache__/
-.voice-input/
+.firevoice/
 *.log
 *.wav
 *.pyc
