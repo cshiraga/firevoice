@@ -3,16 +3,43 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNTIME_DIR="$SCRIPT_DIR/.voice-input"
-PID_FILE="$RUNTIME_DIR/voice-input.pid"
-LOG_FILE="$RUNTIME_DIR/voice-input.log"
+RUNTIME_DIR="$SCRIPT_DIR/.firevoice"
+PID_FILE="$RUNTIME_DIR/firevoice.pid"
+LOG_FILE="$RUNTIME_DIR/firevoice.log"
 PYTHON_BIN="${PYTHON_BIN:-$SCRIPT_DIR/.venv/bin/python}"
 APP_FILE="$SCRIPT_DIR/main.py"
 VOICE_TRIGGER_KEY="${VOICE_TRIGGER_KEY:-fn}"
 
+SPINNER_CHARS='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+SPINNER_PID=""
+
+spinner_start() {
+  local msg="$1"
+  (
+    local i=0
+    while true; do
+      printf "\r  %s  %s" "${SPINNER_CHARS:i%${#SPINNER_CHARS}:1}" "$msg"
+      i=$((i + 1))
+      sleep 0.08
+    done
+  ) &
+  SPINNER_PID=$!
+}
+
+spinner_stop() {
+  if [[ -n "${SPINNER_PID:-}" ]]; then
+    kill "$SPINNER_PID" 2>/dev/null || true
+    wait "$SPINNER_PID" 2>/dev/null || true
+    SPINNER_PID=""
+    printf "\r\033[K"
+  fi
+}
+
+trap 'spinner_stop' EXIT
+
 usage() {
   cat <<EOF
-Usage: ./voice-input.sh {start|stop|restart|status|logs}
+Usage: ./firevoice.sh {start|stop|restart|status|logs}
    or: ./{start|stop|restart|status|logs}
 
 Environment overrides:
@@ -45,23 +72,32 @@ cleanup_stale_pid() {
   fi
 }
 
+
+
 start_app() {
+  echo "  🔥  Igniting FireVoice..."
   ensure_runtime_dir
 
+  # Force unmute on start in case a previous instance was killed
+  # while the system was muted.
+  if [[ "$(uname)" == "Darwin" ]]; then
+    osascript -e 'set volume without output muted' 2>/dev/null || true
+  fi
+
   if [[ ! -x "$PYTHON_BIN" ]]; then
-    echo "Python executable not found: $PYTHON_BIN" >&2
+    echo "  ❌  Python executable not found: $PYTHON_BIN" >&2
     exit 1
   fi
 
   if [[ ! -f "$APP_FILE" ]]; then
-    echo "Application file not found: $APP_FILE" >&2
+    echo "  ❌  Application file not found: $APP_FILE" >&2
     exit 1
   fi
 
   cleanup_stale_pid
 
   if is_running; then
-    echo "voice-input is already running (PID $(read_pid))."
+    echo "  ℹ️  Already running (PID $(read_pid))."
     exit 0
   fi
 
@@ -69,26 +105,29 @@ start_app() {
   nohup env VOICE_TRIGGER_KEY="$VOICE_TRIGGER_KEY" "$PYTHON_BIN" "$APP_FILE" >>"$LOG_FILE" 2>&1 &
   local pid=$!
   echo "$pid" >"$PID_FILE"
+
+  spinner_start "Launching process..."
   sleep 1
+  spinner_stop
 
   if kill -0 "$pid" 2>/dev/null; then
-    echo "Started voice-input in background."
-    echo "PID: $pid"
-    echo "Log: $LOG_FILE"
+    echo "  ✅  FireVoice is live (PID: $pid)"
+    echo "  📄  Log: $LOG_FILE"
     exit 0
   fi
 
-  echo "voice-input failed to stay running. Check logs:" >&2
+  echo "  ❌  Failed to start. Check logs:" >&2
   tail -n 20 "$LOG_FILE" >&2 || true
   rm -f "$PID_FILE"
   exit 1
 }
 
 stop_app_inner() {
+  echo "  🛑  Extinguishing FireVoice..."
   cleanup_stale_pid
 
   if ! is_running; then
-    echo "voice-input is not running."
+    echo "  ℹ️  FireVoice is not running."
     return 0
   fi
 
@@ -96,18 +135,32 @@ stop_app_inner() {
   pid="$(read_pid)"
   kill "$pid"
 
+  spinner_start "Waiting for process to exit..."
   for _ in {1..20}; do
     if ! kill -0 "$pid" 2>/dev/null; then
+      spinner_stop
       rm -f "$PID_FILE"
       rm -f "$LOG_FILE"
-      echo "Stopped voice-input (PID $pid) and cleaned up logs."
+      echo "  ✅  FireVoice stopped (PID: $pid)"
       return 0
     fi
     sleep 0.25
   done
+  spinner_stop
 
-  echo "Process $pid did not stop in time." >&2
-  return 1
+  echo "  ⚠️  Process $pid did not stop in time, force killing..." >&2
+  kill -9 "$pid" 2>/dev/null || true
+  sleep 0.5
+
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "  ❌  Failed to kill process $pid." >&2
+    return 1
+  fi
+
+  rm -f "$PID_FILE"
+  rm -f "$LOG_FILE"
+  echo "  ✅  FireVoice force killed (PID: $pid)"
+  return 0
 }
 
 stop_app() {
@@ -121,10 +174,10 @@ status_app() {
   cleanup_stale_pid
 
   if is_running; then
-    echo "voice-input is running (PID $(read_pid))."
-    echo "Log: $LOG_FILE"
+    echo "  🔥  FireVoice is running (PID: $(read_pid))"
+    echo "  📄  Log: $LOG_FILE"
   else
-    echo "voice-input is not running."
+    echo "  ⚪  FireVoice is not running."
   fi
 }
 
@@ -133,7 +186,7 @@ logs_app() {
   if [[ -f "$LOG_FILE" ]]; then
     tail -n 50 "$LOG_FILE"
   else
-    echo "No log file yet: $LOG_FILE"
+    echo "  ℹ️  No log file yet."
   fi
 }
 
