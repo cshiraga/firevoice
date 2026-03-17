@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-import json
+"""VoiceInputApp – the core voice-to-text application."""
+
 import os
 import queue
 import signal
@@ -8,348 +9,30 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Optional
 
 import numpy as np
 import pyautogui
-import sounddevice as sd
 from faster_whisper import WhisperModel
 from pynput import keyboard
 
-
-Trigger = Union[keyboard.Key, keyboard.KeyCode]
-FN_TRIGGER_NAME = "fn"
-
-try:
-    import Quartz
-except ImportError:
-    Quartz = None
-
-
-class StatusOverlay:
-    """Manages the floating status overlay as a child process."""
-
-    def __init__(self) -> None:
-        self._proc: Optional[subprocess.Popen] = None
-
-    def start(self) -> None:
-        script = str(Path(__file__).with_name("statusbar.py"))
-        try:
-            self._proc = subprocess.Popen(
-                [sys.executable, script],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception as exc:
-            print(f"  ⚠️  Could not start status overlay: {exc}", flush=True)
-            self._proc = None
-
-    def set_state(self, state: str) -> None:
-        if self._proc is None or self._proc.stdin is None:
-            return
-        try:
-            self._proc.stdin.write(f"{state}\n".encode())
-            self._proc.stdin.flush()
-        except (BrokenPipeError, OSError):
-            self._proc = None
-
-    def stop(self) -> None:
-        if self._proc is None:
-            return
-        try:
-            if self._proc.stdin is not None:
-                self._proc.stdin.write(b"quit\n")
-                self._proc.stdin.flush()
-                self._proc.stdin.close()
-            self._proc.wait(timeout=3)
-        except Exception:
-            self._proc.kill()
-            try:
-                self._proc.wait(timeout=3)
-            except Exception:
-                pass
-        self._proc = None
-
-
-def _runtime_dir() -> Path:
-    """Return the runtime directory (~/.firevoice)."""
-    return Path.home() / ".firevoice"
-
-
-def _ready_file() -> Path:
-    return _runtime_dir() / "firevoice.ready"
-
-
-def _default_replacements_path() -> Path:
-    override = os.getenv("VOICE_REPLACEMENTS_FILE")
-    if override:
-        return Path(override).expanduser()
-    return _runtime_dir() / "voice-replacements.json"
-
-
-def _ensure_default_replacements() -> None:
-    """Copy the bundled voice-replacements.json to the runtime directory
-    if it does not already exist there."""
-    dest = _runtime_dir() / "voice-replacements.json"
-    if dest.exists():
-        return
-
-    bundled = Path(__file__).parent / "data" / "voice-replacements.json"
-    if not bundled.exists():
-        return
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(bundled.read_text(encoding="utf-8"), encoding="utf-8")
-
-
-@dataclass
-class Config:
-    sample_rate: int = 16_000
-    channels: int = 1
-    dtype: str = "int16"
-    language: str = "ja"
-    model_size: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "small"))
-    trigger_key_name: str = field(default_factory=lambda: os.getenv("VOICE_TRIGGER_KEY", "fn"))
-    output_mode: str = field(default_factory=lambda: os.getenv("VOICE_OUTPUT_MODE", "paste"))
-    replacements_file: Path = field(default_factory=_default_replacements_path)
-    mute_during_recording: bool = field(
-        default_factory=lambda: os.getenv("VOICE_MUTE_DURING_RECORDING", "true").lower() == "true"
-    )
-    initial_prompt: str = ""
-
-
-def load_replacements(path: Path) -> list[tuple[str, str]]:
-    if not path.exists():
-        if os.getenv("VOICE_REPLACEMENTS_FILE"):
-            raise FileNotFoundError(f"Replacement file not found: {path}")
-        return []
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Failed to parse replacement file {path}: {exc}") from exc
-
-    if not isinstance(data, dict):
-        raise ValueError(
-            f"Replacement file {path} must be a JSON object mapping spoken text to output text."
-        )
-
-    replacements: list[tuple[str, str]] = []
-    for source, target in data.items():
-        if not isinstance(source, str) or not isinstance(target, str):
-            raise ValueError(
-                f"Replacement file {path} must contain only string-to-string mappings."
-            )
-        if not source:
-            raise ValueError(f"Replacement file {path} cannot contain an empty key.")
-        replacements.append((source, target))
-
-    return replacements
-
-
-def build_initial_prompt(replacements: list[tuple[str, str]]) -> str:
-    """Build a Whisper initial_prompt from replacement target values.
-
-    Whisper uses the initial_prompt as a vocabulary hint, so listing the
-    expected output terms helps it transcribe technical jargon correctly.
-    The prompt is assembled by collecting unique replacement targets and
-    joining them with the Japanese reading-point (、).
-    """
-    seen: set[str] = set()
-    keywords: list[str] = []
-    for _source, target in replacements:
-        if target not in seen:
-            seen.add(target)
-            keywords.append(target)
-    return "、".join(keywords)
-
-
-def apply_replacements(text: str, replacements: list[tuple[str, str]]) -> str:
-    normalized = text
-    for source, target in replacements:
-        normalized = normalized.replace(source, target)
-    return normalized
-
-
-def available_trigger_keys() -> dict[str, Trigger]:
-    mapping: dict[str, Optional[Trigger]] = {
-        "f8": keyboard.Key.f8,
-        "f9": keyboard.Key.f9,
-        "f10": keyboard.Key.f10,
-        "f18": keyboard.Key.f18,
-        "right_alt": keyboard.Key.alt_r,
-        "right_option": keyboard.Key.alt_r,
-        "left_alt": keyboard.Key.alt_l,
-        "left_option": keyboard.Key.alt_l,
-        "media_play_pause": getattr(keyboard.Key, "media_play_pause", None),
-        "media_volume_mute": getattr(keyboard.Key, "media_volume_mute", None),
-    }
-    return {name: value for name, value in mapping.items() if value is not None}
-
-
-def parse_trigger_key(name: str) -> Trigger:
-    normalized = name.strip().lower()
-
-    mapping = available_trigger_keys()
-    if normalized in mapping:
-        return mapping[normalized]
-
-    if len(normalized) == 1:
-        return keyboard.KeyCode.from_char(normalized)
-
-    supported = ", ".join(sorted(mapping))
-    raise ValueError(
-        f"Unsupported VOICE_TRIGGER_KEY={name!r}. "
-        f"Use a single character or one of: {supported}"
-    )
-
-
-def normalize_trigger_key_name(name: str) -> str:
-    normalized = name.strip().lower()
-    if normalized == FN_TRIGGER_NAME:
-        if sys.platform != "darwin":
-            raise ValueError("VOICE_TRIGGER_KEY=fn is supported only on macOS.")
-        return normalized
-    parse_trigger_key(normalized)
-    return normalized
-
-
-def key_matches(event_key: object, trigger_key: Trigger) -> bool:
-    if isinstance(trigger_key, keyboard.KeyCode):
-        return (
-            isinstance(event_key, keyboard.KeyCode)
-            and event_key.char == trigger_key.char
-        )
-    return event_key == trigger_key
-
-
-class FnKeyMonitor:
-    KEYCODE_FN = 63
-
-    def __init__(
-        self,
-        on_press: Callable[[], None],
-        on_release: Callable[[], None],
-    ) -> None:
-        if Quartz is None:
-            raise RuntimeError(
-                "VOICE_TRIGGER_KEY=fn requires the pyobjc Quartz bindings. "
-                "Install them in the Python environment that runs this tool: "
-                "pip install pyobjc-framework-Quartz"
-            )
-
-        self.on_press = on_press
-        self.on_release = on_release
-        self._fn_down = False
-        self._tap = None
-        self._run_loop_source = None
-        self._run_loop: object = None
-
-    def start(self) -> None:
-        event_mask = Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
-        self._tap = Quartz.CGEventTapCreate(
-            Quartz.kCGSessionEventTap,
-            Quartz.kCGHeadInsertEventTap,
-            Quartz.kCGEventTapOptionListenOnly,
-            event_mask,
-            self._handle_event,
-            None,
-        )
-        if self._tap is None:
-            raise RuntimeError(
-                "Failed to monitor the fn/globe key. "
-                "Add this app's Python/Terminal process to "
-                "System Settings > Privacy & Security > Accessibility."
-            )
-
-        self._run_loop_source = Quartz.CFMachPortCreateRunLoopSource(
-            None,
-            self._tap,
-            0,
-        )
-        self._run_loop = Quartz.CFRunLoopGetCurrent()
-        Quartz.CFRunLoopAddSource(
-            self._run_loop,
-            self._run_loop_source,
-            Quartz.kCFRunLoopCommonModes,
-        )
-        Quartz.CGEventTapEnable(self._tap, True)
-        Quartz.CFRunLoopRun()
-
-    def stop(self) -> None:
-        if self._run_loop is not None:
-            Quartz.CFRunLoopStop(self._run_loop)
-
-    def _handle_event(self, _proxy, event_type, event, _refcon):
-        if event_type != Quartz.kCGEventFlagsChanged:
-            return event
-
-        keycode = Quartz.CGEventGetIntegerValueField(
-            event,
-            Quartz.kCGKeyboardEventKeycode,
-        )
-        if keycode != self.KEYCODE_FN:
-            return event
-
-        flags = Quartz.CGEventGetFlags(event)
-        fn_down = bool(flags & Quartz.kCGEventFlagMaskSecondaryFn)
-
-        if fn_down and not self._fn_down:
-            self._fn_down = True
-            self.on_press()
-        elif not fn_down and self._fn_down:
-            self._fn_down = False
-            self.on_release()
-
-        return event
-
-
-class AudioRecorder:
-    def __init__(self, config: Config) -> None:
-        self.config = config
-        self._frames: list[np.ndarray] = []
-        self._stream = sd.InputStream(
-            samplerate=config.sample_rate,
-            channels=config.channels,
-            dtype=config.dtype,
-            callback=self._callback,
-        )
-        self._lock = threading.Lock()
-        self._recording = False
-
-    def start(self) -> None:
-        with self._lock:
-            if self._recording:
-                return
-
-            self._frames = []
-            self._stream.start()
-            self._recording = True
-            print("  🔴  Recording...", flush=True)
-
-    def stop(self) -> Optional[np.ndarray]:
-        with self._lock:
-            if not self._recording:
-                return None
-
-            self._stream.stop()
-            self._recording = False
-
-        if not self._frames:
-            print("  ⚠️  No audio captured.", flush=True)
-            return None
-
-        print("  ⏹️  Recording stopped. Transcribing...", flush=True)
-        return np.concatenate(self._frames, axis=0)
-
-    def _callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
-        del frames, time_info
-        if status:
-            print(f"  ⚠️  Audio status: {status}", flush=True)
-        self._frames.append(indata.copy())
+from firevoice.config import (
+    Config,
+    apply_replacements,
+    build_initial_prompt,
+    ensure_default_replacements,
+    load_replacements,
+    ready_file,
+)
+from firevoice.overlay import StatusOverlay
+from firevoice.recorder import AudioRecorder
+from firevoice.trigger import (
+    FN_TRIGGER_NAME,
+    FnKeyMonitor,
+    key_matches,
+    normalize_trigger_key_name,
+    parse_trigger_key,
+)
 
 
 class VoiceInputApp:
@@ -411,7 +94,7 @@ class VoiceInputApp:
         print("", flush=True)
 
         # Signal to the CLI that the app is fully ready.
-        _ready_file().write_text(str(os.getpid()))
+        ready_file().write_text(str(os.getpid()))
 
         if self._status_icon is not None:
             self._status_icon.start()
@@ -444,9 +127,35 @@ class VoiceInputApp:
         Running press/release handling in a dedicated thread ensures that
         the Quartz event-tap callback (or pynput listener callback) returns
         immediately, preventing macOS from disabling the tap due to timeout.
+
+        A 5-second timeout on the queue acts as a safety net: if the
+        trigger key was physically released but the event was lost (e.g.
+        the CGEventTap was temporarily disabled), the recording is
+        automatically stopped.
         """
+        _SAFETY_TIMEOUT = 5.0
         while True:
-            event = self._trigger_events.get()
+            try:
+                event = self._trigger_events.get(timeout=_SAFETY_TIMEOUT)
+            except queue.Empty:
+                # Safety: recording is active but no events arrived.
+                # Check if the trigger key is actually still held.
+                if not self.trigger_held:
+                    continue
+                key_still_down = False
+                if self._fn_monitor is not None:
+                    key_still_down = self._fn_monitor._fn_down
+                elif self.trigger_key is not None:
+                    key_still_down = self._trigger_key_physically_down
+                if not key_still_down:
+                    print(
+                        "  ⚠️  Safety: trigger released but event missed. "
+                        "Auto-stopping recording.",
+                        flush=True,
+                    )
+                    self._handle_trigger_release()
+                continue
+
             if event == "press":
                 self._handle_trigger_press()
             elif event == "release":
@@ -463,8 +172,22 @@ class VoiceInputApp:
             self._enqueue_release()
 
     def _handle_trigger_press(self) -> None:
+        # If the previous release event was lost (e.g. CGEventTap was
+        # temporarily disabled), force-stop the stale recording so the
+        # user can start fresh with this press.
         if self.trigger_held:
-            return
+            print("  ⚠️  Stale recording detected, force-stopping...", flush=True)
+            try:
+                self.recorder.stop()
+            except Exception:
+                pass
+            if self._muted_by_us:
+                self._set_mute_state(False)
+                self._muted_by_us = False
+            self.trigger_held = False
+            if self._status_icon is not None:
+                self._status_icon.set_state("idle")
+
         if self._busy:
             print("  ⏳  Still processing previous recording. Please wait.", flush=True)
             return
@@ -521,14 +244,6 @@ class VoiceInputApp:
         except Exception as exc:
             print(f"  ❌  Transcription failed: {exc}", flush=True)
         finally:
-            # Drain stale trigger events that accumulated while busy,
-            # so they don't cause unintended recordings.
-            while not self._trigger_events.empty():
-                try:
-                    self._trigger_events.get_nowait()
-                except queue.Empty:
-                    break
-            self.trigger_held = False
             self._busy = False
             if self._status_icon is not None:
                 self._status_icon.set_state("idle")
@@ -621,7 +336,7 @@ class VoiceInputApp:
 
 def run_app() -> int:
     """Run the voice input application (foreground)."""
-    _ensure_default_replacements()
+    ensure_default_replacements()
 
     try:
         app = VoiceInputApp(Config())
@@ -647,7 +362,7 @@ def run_app() -> int:
     finally:
         if app._muted_by_us:
             app._set_mute_state(False)
-        _ready_file().unlink(missing_ok=True)
+        ready_file().unlink(missing_ok=True)
     return 0
 
 
