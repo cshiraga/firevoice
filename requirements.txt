@@ -1,8 +1,0 @@
-faster-whisper
-pyautogui
-sounddevice
-pynput
-numpy
-scipy
-pyobjc-framework-Quartz; sys_platform == 'darwin'
-pyobjc-framework-Cocoa; sys_platform == 'darwin'
