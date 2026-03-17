@@ -20,10 +20,8 @@ import sys
 import time
 from pathlib import Path
 
-
-def _runtime_dir() -> Path:
-    """Return the runtime directory (~/.firevoice)."""
-    return Path.home() / ".firevoice"
+from firevoice.config import ready_file as _ready_file
+from firevoice.config import runtime_dir as _runtime_dir
 
 
 def _pid_file() -> Path:
@@ -32,10 +30,6 @@ def _pid_file() -> Path:
 
 def _log_file() -> Path:
     return _runtime_dir() / "firevoice.log"
-
-
-def _ready_file() -> Path:
-    return _runtime_dir() / "firevoice.ready"
 
 
 def _ensure_runtime_dir() -> None:
