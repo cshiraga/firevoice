@@ -12,6 +12,7 @@ Provides subcommands mirroring the original shell scripts:
 from __future__ import annotations
 
 import argparse
+import collections
 import os
 import signal
 import subprocess
@@ -116,13 +117,16 @@ def _cmd_start() -> int:
     # Launch the app as a background process
     env = os.environ.copy()
     # firevoice.app:run_app is the entry point
+    log_fh = open(log_file, "a")  # noqa: SIM115
     proc = subprocess.Popen(
         [sys.executable, "-m", "firevoice.app"],
-        stdout=open(log_file, "a"),
+        stdout=log_fh,
         stderr=subprocess.STDOUT,
         start_new_session=True,
         env=env,
     )
+    # Close the FD in the parent – the child process inherits its own copy.
+    log_fh.close()
 
     pid = proc.pid
     _pid_file().write_text(str(pid))
@@ -240,9 +244,11 @@ def _cmd_logs() -> int:
     _ensure_runtime_dir()
     log_file = _log_file()
     if log_file.exists():
-        lines = log_file.read_text().splitlines()
-        for line in lines[-50:]:
-            print(line)
+        # Read only the last 50 lines efficiently using deque
+        with open(log_file) as f:
+            tail = collections.deque(f, maxlen=50)
+        for line in tail:
+            print(line, end="")
     else:
         print("  ℹ️  No log file yet.")
     return 0
