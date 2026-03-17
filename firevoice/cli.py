@@ -185,6 +185,30 @@ def _cmd_start() -> int:
     else:
         print("\r\033[K", end="", flush=True)
         print("  ❌  Timed out waiting for model to load.", file=sys.stderr)
+        # Kill the orphaned background process
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        else:
+            # Wait briefly for graceful shutdown
+            time.sleep(2)
+            try:
+                os.kill(pid, 0)
+                # Still alive – force kill
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        # Clean up PID / ready files
+        _pid_file().unlink(missing_ok=True)
+        _ready_file().unlink(missing_ok=True)
+        # Show recent log output for diagnosis
+        if log_file.exists():
+            lines = log_file.read_text().splitlines()
+            if lines:
+                print("  📄  Recent logs:", file=sys.stderr)
+                for line in lines[-10:]:
+                    print(f"    {line}", file=sys.stderr)
         return 1
 
     trigger_key = os.environ.get("VOICE_TRIGGER_KEY", "fn")
