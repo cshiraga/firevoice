@@ -5,3 +5,6 @@ __pycache__/
 *.wav
 *.pyc
 .DS_Store
+*.egg-info/
+dist/
+build/

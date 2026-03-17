@@ -30,35 +30,32 @@
 
 ## 🛠️ Setup
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/cshiraga/firevoice.git
-   cd firevoice
-   ```
+### Quick Install (recommended)
 
-2. **Create a virtual environment**:
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
+```bash
+# 1. Install pipx (skip if already installed)
+brew install pipx
+pipx ensurepath
 
-3. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+# 2. Restart your terminal, then install FireVoice
+pipx install git+https://github.com/cshiraga/firevoice.git
+```
 
-   *Note: On macOS, you may need to grant Accessibility permissions to your Terminal/Python when first prompted.*
+That's it! The `firevoice` command is now available globally.
+
+> **Note**: On macOS, you may need to grant Accessibility permissions to your Terminal/Python when first prompted.
 
 ## 🚀 How to Use
 
-Control the background service using the provided scripts:
+Control the background service using `firevoice` subcommands:
 
 ```bash
-./start   # Start the background service
-./status  # Check if it's running
-./stop    # Stop and clean up logs
-./restart # Apply changes (e.g., after editing replacements)
-./logs    # Show recent log output
+firevoice start     # Start the background service
+firevoice status    # Check if it's running
+firevoice stop      # Stop and clean up logs
+firevoice restart   # Apply changes (e.g., after editing replacements)
+firevoice logs      # Show recent log output
+firevoice run       # Run in foreground (for debugging)
 ```
 
 ### Recording
@@ -80,12 +77,12 @@ If the transcription accuracy is not as expected, try the following:
 
 ### Custom Dictionary (Replacements)
 
-The project includes a pre-configured `voice-replacements.json` file. It is specifically optimized for **Japanese developers** to:
+A default `voice-replacements.json` file is automatically created in `~/.firevoice/` on first run. It is specifically optimized for **Japanese developers** to:
 - Convert Katakana technical terms to English (e.g., "ジェミニ" -> "Gemini", "ギットハブ" -> "GitHub").
 - Expand abbreviations (e.g., "プルリク" -> "PR").
 - Insert symbols from spoken words (e.g., "スラッシュ" -> "/").
 
-Feel free to modify this file to suit your own workflow or language. If you don't need these replacements, you can simply clear the JSON object in that file.
+Feel free to modify `~/.firevoice/voice-replacements.json` to suit your own workflow or language.
 
 ### Environment Variables
 
@@ -94,25 +91,28 @@ Feel free to modify this file to suit your own workflow or language. If you don'
 | `VOICE_TRIGGER_KEY` | Trigger key to start recording | `fn` |
 | `WHISPER_MODEL` | Whisper model size (`base`, `small`, `medium`) | `small` |
 | `VOICE_OUTPUT_MODE` | Output method (`paste` or `type`) | `paste` |
-| `VOICE_REPLACEMENTS_FILE` | Path to custom replacements JSON | `./voice-replacements.json` |
+| `VOICE_REPLACEMENTS_FILE` | Path to custom replacements JSON | `~/.firevoice/voice-replacements.json` |
 | `VOICE_MUTE_DURING_RECORDING` | Mute system audio while recording | `true` |
-| `PYTHON_BIN` | Python executable path | `./.venv/bin/python` |
 
 ## 🔄 Updating
 
-To get the latest model improvements and bug fixes, update the dependencies:
-
 ```bash
-source .venv/bin/activate
-pip install --upgrade -r requirements.txt
+pipx upgrade firevoice
 ```
 
 To use a newer or larger Whisper model (e.g., `medium`, `large-v3`), set the `WHISPER_MODEL` environment variable. The model will be downloaded automatically on first use.
 
+## 🗑️ Uninstalling
+
+```bash
+pipx uninstall firevoice
+rm -rf ~/.firevoice   # remove config and logs (optional)
+```
+
 ## 🔒 Security & Privacy
 
 - **No Cloud Latency/Cost**: No API keys required.
-- **Auto-Cleanup**: Temporary `.wav` files and log files are deleted on service stop/restart.
+- **Auto-Cleanup**: Log files are deleted on service stop/restart.
 - **Transcription Logs**: For privacy, the transcribed text is **not** written to the system logs by default.
 
 ## 📄 License
