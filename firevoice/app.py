@@ -79,6 +79,10 @@ def _runtime_dir() -> Path:
     return Path.home() / ".firevoice"
 
 
+def _ready_file() -> Path:
+    return _runtime_dir() / "firevoice.ready"
+
+
 def _default_replacements_path() -> Path:
     override = os.getenv("VOICE_REPLACEMENTS_FILE")
     if override:
@@ -390,6 +394,9 @@ class VoiceInputApp:
         print("  ✅  Model loaded. Ready!", flush=True)
         print("", flush=True)
 
+        # Signal to the CLI that the app is fully ready.
+        _ready_file().write_text(str(os.getpid()))
+
         if self._status_icon is not None:
             self._status_icon.start()
 
@@ -624,6 +631,7 @@ def run_app() -> int:
     finally:
         if app._muted_by_us:
             app._set_mute_state(False)
+        _ready_file().unlink(missing_ok=True)
     return 0
 
 

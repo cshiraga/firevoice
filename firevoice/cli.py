@@ -34,6 +34,10 @@ def _log_file() -> Path:
     return _runtime_dir() / "firevoice.log"
 
 
+def _ready_file() -> Path:
+    return _runtime_dir() / "firevoice.ready"
+
+
 def _ensure_runtime_dir() -> None:
     _runtime_dir().mkdir(parents=True, exist_ok=True)
 
@@ -51,20 +55,35 @@ def _read_pid() -> int | None:
         return None
 
 
+def _is_firevoice_process(pid: int) -> bool:
+    """Check whether *pid* belongs to a FireVoice process."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return "firevoice" in result.stdout.lower()
+    except OSError:
+        return False
+
+
 def _is_running() -> bool:
     pid = _read_pid()
     if pid is None:
         return False
     try:
         os.kill(pid, 0)
-        return True
     except (ProcessLookupError, PermissionError):
         return False
+    return _is_firevoice_process(pid)
 
 
 def _cleanup_stale_pid() -> None:
     if _pid_file().exists() and not _is_running():
         _pid_file().unlink(missing_ok=True)
+        _ready_file().unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -118,31 +137,54 @@ def _cmd_start() -> int:
     env = os.environ.copy()
     # firevoice.app:run_app is the entry point
     log_fh = open(log_file, "a")  # noqa: SIM115
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "firevoice.app"],
-        stdout=log_fh,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-        env=env,
-    )
-    # Close the FD in the parent – the child process inherits its own copy.
-    log_fh.close()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "firevoice.app"],
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=env,
+        )
+    finally:
+        # Close the FD in the parent – the child process inherits its own copy.
+        log_fh.close()
 
     pid = proc.pid
     _pid_file().write_text(str(pid))
 
-    _spinner("Launching process...", 1.0)
+    # Remove stale ready file from previous runs
+    _ready_file().unlink(missing_ok=True)
 
-    # Check if the process is still alive
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
-        print("  ❌  Failed to start. Check logs:", file=sys.stderr)
-        if log_file.exists():
-            lines = log_file.read_text().splitlines()
-            for line in lines[-20:]:
-                print(f"    {line}", file=sys.stderr)
-        _pid_file().unlink(missing_ok=True)
+    # Wait for the app to fully initialize (model loading etc.)
+    timeout = 120
+    end_time = time.monotonic() + timeout
+    i = 0
+    while time.monotonic() < end_time:
+        # Check if the process is still alive
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            print("\r\033[K", end="", flush=True)
+            print("  ❌  Process exited during startup. Check logs:", file=sys.stderr)
+            if log_file.exists():
+                lines = log_file.read_text().splitlines()
+                for line in lines[-20:]:
+                    print(f"    {line}", file=sys.stderr)
+            _pid_file().unlink(missing_ok=True)
+            return 1
+
+        # Check if the ready signal has been written
+        if _ready_file().exists():
+            print("\r\033[K", end="", flush=True)
+            break
+
+        ch = SPINNER_CHARS[i % len(SPINNER_CHARS)]
+        print(f"\r  {ch}  Loading Whisper model...", end="", flush=True)
+        i += 1
+        time.sleep(0.08)
+    else:
+        print("\r\033[K", end="", flush=True)
+        print("  ❌  Timed out waiting for model to load.", file=sys.stderr)
         return 1
 
     trigger_key = os.environ.get("VOICE_TRIGGER_KEY", "fn")
@@ -186,21 +228,28 @@ def _cmd_stop_inner() -> bool:
         os.kill(pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         _pid_file().unlink(missing_ok=True)
+        _ready_file().unlink(missing_ok=True)
         print(f"  ✅  FireVoice stopped (PID: {pid})")
         return True
 
-    _spinner("Waiting for process to exit...", 1.0)
-
-    # Wait up to 5 seconds for the process to exit
-    for _ in range(20):
+    # Wait up to 6 seconds for the process to exit, showing a spinner
+    end_time = time.monotonic() + 6.0
+    i = 0
+    while time.monotonic() < end_time:
         try:
             os.kill(pid, 0)
         except (ProcessLookupError, PermissionError):
+            print("\r\033[K", end="", flush=True)
             _pid_file().unlink(missing_ok=True)
             _log_file().unlink(missing_ok=True)
+            _ready_file().unlink(missing_ok=True)
             print(f"  ✅  FireVoice stopped (PID: {pid})")
             return True
-        time.sleep(0.25)
+        ch = SPINNER_CHARS[i % len(SPINNER_CHARS)]
+        print(f"\r  {ch}  Waiting for process to exit...", end="", flush=True)
+        i += 1
+        time.sleep(0.08)
+    print("\r\033[K", end="", flush=True)
 
     # Force kill
     print(f"  ⚠️  Process {pid} did not stop in time, force killing...", file=sys.stderr)
@@ -217,6 +266,7 @@ def _cmd_stop_inner() -> bool:
     except (ProcessLookupError, PermissionError):
         _pid_file().unlink(missing_ok=True)
         _log_file().unlink(missing_ok=True)
+        _ready_file().unlink(missing_ok=True)
         print(f"  ✅  FireVoice force killed (PID: {pid})")
         return True
 
