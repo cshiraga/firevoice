@@ -97,7 +97,8 @@ Feel free to modify `~/.firevoice/voice-replacements.json` to suit your own work
 ## 🔄 Updating
 
 ```bash
-pipx upgrade firevoice
+pipx install --force git+https://github.com/cshiraga/firevoice.git
+firevoice restart
 ```
 
 To use a newer or larger Whisper model (e.g., `medium`, `large-v3`), set the `WHISPER_MODEL` environment variable. The model will be downloaded automatically on first use.
