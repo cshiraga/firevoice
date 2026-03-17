@@ -388,18 +388,25 @@ class VoiceInputApp:
         print(f"  🔑  Trigger: {self.trigger_key_name}  |  🧠 Model: {self.config.model_size}  |  📝 {len(self.replacements)} rules", flush=True)
         print("", flush=True)
 
-        # Pre-load the model and warm up the VAD pipeline so the first
-        # transcription is fast.  The Silero VAD model used by
-        # faster-whisper is lazily loaded on the first transcribe() call,
-        # so we run a dummy transcription with silence to trigger it now.
+        # Pre-load the model and warm up the full transcription pipeline
+        # so the first real transcription is fast.  Two warmup calls are
+        # needed:
+        #   1. vad_filter=True  – loads the Silero VAD model (lazy-init).
+        #   2. vad_filter=False – forces CTranslate2 to run actual Whisper
+        #      inference on dummy audio, warming up internal CPU caches.
+        #      (With vad_filter=True the silent dummy is filtered out and
+        #       Whisper never runs, leaving the first real call slow.)
         print("  ⏳  Loading Whisper model...", flush=True)
         self._get_model()
         dummy = np.zeros(self.config.sample_rate // 10, dtype=np.float32)
-        self._get_model().transcribe(
-            dummy,
-            language=self.config.language,
-            vad_filter=True,
-        )
+        # Warm up Silero VAD
+        list(self._get_model().transcribe(
+            dummy, language=self.config.language, vad_filter=True,
+        )[0])
+        # Warm up CTranslate2 inference
+        list(self._get_model().transcribe(
+            dummy, language=self.config.language, vad_filter=False,
+        )[0])
         print("  ✅  Model loaded. Ready!", flush=True)
         print("", flush=True)
 
