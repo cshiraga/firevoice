@@ -80,6 +80,23 @@ def _is_running() -> bool:
     return _is_firevoice_process(pid)
 
 
+def _kill_process_group(pid: int, sig: int) -> None:
+    """Send *sig* to the process group led by *pid*.
+
+    Because the background service is launched with ``start_new_session=True``,
+    *pid* is the process-group leader.  Killing the whole group ensures that
+    child processes (e.g. the status overlay) are also terminated.
+    Falls back to ``os.kill`` if the pgid cannot be resolved.
+    """
+    try:
+        pgid = os.getpgid(pid)
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        raise
+    except OSError:
+        os.kill(pid, sig)
+
+
 def _cleanup_stale_pid() -> None:
     if _pid_file().exists() and not _is_running():
         _pid_file().unlink(missing_ok=True)
@@ -187,7 +204,7 @@ def _cmd_start() -> int:
         print("  ❌  Timed out waiting for model to load.", file=sys.stderr)
         # Kill the orphaned background process
         try:
-            os.kill(pid, signal.SIGTERM)
+            _kill_process_group(pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             pass
         else:
@@ -196,7 +213,7 @@ def _cmd_start() -> int:
             try:
                 os.kill(pid, 0)
                 # Still alive – force kill
-                os.kill(pid, signal.SIGKILL)
+                _kill_process_group(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
         # Clean up PID / ready files
@@ -249,7 +266,7 @@ def _cmd_stop_inner() -> bool:
         return True
 
     try:
-        os.kill(pid, signal.SIGTERM)
+        _kill_process_group(pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         _pid_file().unlink(missing_ok=True)
         _ready_file().unlink(missing_ok=True)
@@ -278,7 +295,7 @@ def _cmd_stop_inner() -> bool:
     # Force kill
     print(f"  ⚠️  Process {pid} did not stop in time, force killing...", file=sys.stderr)
     try:
-        os.kill(pid, signal.SIGKILL)
+        _kill_process_group(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         pass
     time.sleep(0.5)
