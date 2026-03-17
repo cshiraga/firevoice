@@ -74,11 +74,31 @@ class StatusOverlay:
         self._proc = None
 
 
-def default_replacements_path() -> Path:
+def _runtime_dir() -> Path:
+    """Return the runtime directory (~/.firevoice)."""
+    return Path.home() / ".firevoice"
+
+
+def _default_replacements_path() -> Path:
     override = os.getenv("VOICE_REPLACEMENTS_FILE")
     if override:
         return Path(override).expanduser()
-    return Path(__file__).with_name("voice-replacements.json")
+    return _runtime_dir() / "voice-replacements.json"
+
+
+def _ensure_default_replacements() -> None:
+    """Copy the bundled voice-replacements.json to the runtime directory
+    if it does not already exist there."""
+    dest = _runtime_dir() / "voice-replacements.json"
+    if dest.exists():
+        return
+
+    bundled = Path(__file__).parent / "data" / "voice-replacements.json"
+    if not bundled.exists():
+        return
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(bundled.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 @dataclass
@@ -90,7 +110,7 @@ class Config:
     model_size: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "small"))
     trigger_key_name: str = field(default_factory=lambda: os.getenv("VOICE_TRIGGER_KEY", "fn"))
     output_mode: str = field(default_factory=lambda: os.getenv("VOICE_OUTPUT_MODE", "paste"))
-    replacements_file: Path = field(default_factory=default_replacements_path)
+    replacements_file: Path = field(default_factory=_default_replacements_path)
     mute_during_recording: bool = field(
         default_factory=lambda: os.getenv("VOICE_MUTE_DURING_RECORDING", "true").lower() == "true"
     )
@@ -576,7 +596,10 @@ class VoiceInputApp:
         )
 
 
-def main() -> int:
+def run_app() -> int:
+    """Run the voice input application (foreground)."""
+    _ensure_default_replacements()
+
     try:
         app = VoiceInputApp(Config())
     except (FileNotFoundError, ValueError) as exc:
@@ -605,4 +628,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_app())

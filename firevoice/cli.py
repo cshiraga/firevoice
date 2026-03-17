@@ -1,0 +1,296 @@
+"""FireVoice CLI – process management for the voice-to-text engine.
+
+Provides subcommands mirroring the original shell scripts:
+  firevoice start    – launch in background
+  firevoice stop     – stop the background process
+  firevoice restart  – stop + start
+  firevoice status   – check if running
+  firevoice logs     – show recent log output
+  firevoice run      – run in foreground (for debugging)
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def _runtime_dir() -> Path:
+    """Return the runtime directory (~/.firevoice)."""
+    return Path.home() / ".firevoice"
+
+
+def _pid_file() -> Path:
+    return _runtime_dir() / "firevoice.pid"
+
+
+def _log_file() -> Path:
+    return _runtime_dir() / "firevoice.log"
+
+
+def _ensure_runtime_dir() -> None:
+    _runtime_dir().mkdir(parents=True, exist_ok=True)
+
+
+def _read_pid() -> int | None:
+    pid_file = _pid_file()
+    if not pid_file.exists():
+        return None
+    text = pid_file.read_text().strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _is_running() -> bool:
+    pid = _read_pid()
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _cleanup_stale_pid() -> None:
+    if _pid_file().exists() and not _is_running():
+        _pid_file().unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Spinner
+# ---------------------------------------------------------------------------
+
+SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def _spinner(message: str, duration: float) -> None:
+    """Display a spinner for *duration* seconds, then clear the line."""
+    end_time = time.monotonic() + duration
+    i = 0
+    while time.monotonic() < end_time:
+        ch = SPINNER_CHARS[i % len(SPINNER_CHARS)]
+        print(f"\r  {ch}  {message}", end="", flush=True)
+        i += 1
+        time.sleep(0.08)
+    print("\r\033[K", end="", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+
+def _cmd_start() -> int:
+    print("  🔥  Igniting FireVoice...")
+    _ensure_runtime_dir()
+
+    # Force unmute on start in case a previous instance was killed
+    # while the system was muted.
+    if sys.platform == "darwin":
+        subprocess.run(
+            ["osascript", "-e", "set volume without output muted"],
+            check=False,
+            capture_output=True,
+        )
+
+    _cleanup_stale_pid()
+
+    if _is_running():
+        print(f"  ℹ️  Already running (PID {_read_pid()}).")
+        return 0
+
+    # Clear the log file
+    log_file = _log_file()
+    log_file.write_text("")
+
+    # Launch the app as a background process
+    env = os.environ.copy()
+    # firevoice.app:run_app is the entry point
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "firevoice.app"],
+        stdout=open(log_file, "a"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env=env,
+    )
+
+    pid = proc.pid
+    _pid_file().write_text(str(pid))
+
+    _spinner("Launching process...", 1.0)
+
+    # Check if the process is still alive
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        print("  ❌  Failed to start. Check logs:", file=sys.stderr)
+        if log_file.exists():
+            lines = log_file.read_text().splitlines()
+            for line in lines[-20:]:
+                print(f"    {line}", file=sys.stderr)
+        _pid_file().unlink(missing_ok=True)
+        return 1
+
+    trigger_key = os.environ.get("VOICE_TRIGGER_KEY", "fn")
+    print("")
+    print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("")
+    print("   🔥  F I R E V O I C E")
+    print("       Voice-to-Text Engine")
+    print("")
+    print(f"   ✅  Running  (PID: {pid})")
+    print(f"   ⌨   Trigger: {trigger_key}")
+    print("")
+    print("   📖  How to use")
+    print(f"   ├─  Hold [{trigger_key}] key to start recording")
+    print("   ├─  Release to transcribe")
+    print("   └─  Text is pasted at cursor position")
+    print("")
+    print("   💡  firevoice logs  → view logs")
+    print("       firevoice stop  → stop service")
+    print("")
+    print("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("")
+
+    return 0
+
+
+def _cmd_stop_inner() -> bool:
+    """Stop the background process.  Returns True on success."""
+    print("  🛑  Extinguishing FireVoice...")
+    _cleanup_stale_pid()
+
+    if not _is_running():
+        print("  ℹ️  FireVoice is not running.")
+        return True
+
+    pid = _read_pid()
+    if pid is None:
+        return True
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        _pid_file().unlink(missing_ok=True)
+        print(f"  ✅  FireVoice stopped (PID: {pid})")
+        return True
+
+    _spinner("Waiting for process to exit...", 1.0)
+
+    # Wait up to 5 seconds for the process to exit
+    for _ in range(20):
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            _pid_file().unlink(missing_ok=True)
+            _log_file().unlink(missing_ok=True)
+            print(f"  ✅  FireVoice stopped (PID: {pid})")
+            return True
+        time.sleep(0.25)
+
+    # Force kill
+    print(f"  ⚠️  Process {pid} did not stop in time, force killing...", file=sys.stderr)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    time.sleep(0.5)
+
+    try:
+        os.kill(pid, 0)
+        print(f"  ❌  Failed to kill process {pid}.", file=sys.stderr)
+        return False
+    except (ProcessLookupError, PermissionError):
+        _pid_file().unlink(missing_ok=True)
+        _log_file().unlink(missing_ok=True)
+        print(f"  ✅  FireVoice force killed (PID: {pid})")
+        return True
+
+
+def _cmd_stop() -> int:
+    return 0 if _cmd_stop_inner() else 1
+
+
+def _cmd_restart() -> int:
+    _cmd_stop_inner()
+    return _cmd_start()
+
+
+def _cmd_status() -> int:
+    _cleanup_stale_pid()
+    if _is_running():
+        print(f"  🔥  FireVoice is running (PID: {_read_pid()})")
+        print(f"  📄  Log: {_log_file()}")
+    else:
+        print("  ⚪  FireVoice is not running.")
+    return 0
+
+
+def _cmd_logs() -> int:
+    _ensure_runtime_dir()
+    log_file = _log_file()
+    if log_file.exists():
+        lines = log_file.read_text().splitlines()
+        for line in lines[-50:]:
+            print(line)
+    else:
+        print("  ℹ️  No log file yet.")
+    return 0
+
+
+def _cmd_run() -> int:
+    """Run the voice input application in the foreground."""
+    from firevoice.app import run_app
+
+    return run_app()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="firevoice",
+        description="🔥 FireVoice – A blazing-fast, fully local voice-to-text tool",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("start", help="Start the background service")
+    sub.add_parser("stop", help="Stop the background service")
+    sub.add_parser("restart", help="Restart the background service")
+    sub.add_parser("status", help="Check if the service is running")
+    sub.add_parser("logs", help="Show recent log output")
+    sub.add_parser("run", help="Run in foreground (for debugging)")
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
+        return 1
+
+    commands = {
+        "start": _cmd_start,
+        "stop": _cmd_stop,
+        "restart": _cmd_restart,
+        "status": _cmd_status,
+        "logs": _cmd_logs,
+        "run": _cmd_run,
+    }
+
+    return commands[args.command]()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
